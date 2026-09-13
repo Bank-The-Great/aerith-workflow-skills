@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .contracts import GateError, digest, safe_text
 from .processes import execute, minimal_environment
+from .provenance import parse_codex_provenance, parse_gemini_provenance
 
 _HOST_CAPABILITIES = {}
 
@@ -163,6 +164,9 @@ class CLIProvider:
         self.name, self.config, self.audit, self.cancelled = name, config, audit, cancelled
 
     def invoke(self, stage: str, model: str, packet: dict, directory: Path) -> dict:
+        required_auth = {"codex-provenance": "codex-subscription", "gemini-provenance": "gemini-subscription"}
+        if self.config.get("output") in required_auth and self.config.get("auth_mode") != required_auth[self.config["output"]]:
+            raise GateError("isolated provenance adapters require subscription-only authentication")
         if self.config.get("output") == "claude-stream" and self.config.get("auth_mode") != "claude-subscription":
             raise GateError("Claude stream adapter requires subscription-only authentication")
         env = provider_environment(self.config)
@@ -192,8 +196,10 @@ class CLIProvider:
         try:
             mode = self.config.get("output", "json")
             metadata = {}
-            if mode == "claude-stream":
-                response, metadata = parse_claude_stream(result.stdout, model)
+            stream_parsers = {"claude-stream": parse_claude_stream, "codex-provenance": parse_codex_provenance,
+                              "gemini-provenance": parse_gemini_provenance}
+            if mode in stream_parsers:
+                response, metadata = stream_parsers[mode](result.stdout, model)
                 actual = metadata["model"]
             else:
                 envelope = json.loads(result.stdout)
@@ -206,7 +212,7 @@ class CLIProvider:
                     response = json_object(envelope["result"])
             elif mode == "gemini-json":
                 response = json.loads(envelope["response"])
-            elif mode != "claude-stream":
+            elif mode not in stream_parsers:
                 response = envelope
             if not isinstance(response, dict):
                 raise ValueError()

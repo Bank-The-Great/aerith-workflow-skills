@@ -18,6 +18,8 @@
   prohibit implicit image pulls and override image ENTRYPOINT with approved argv.
 - Requested-model metadata is not automatically observed-response metadata.
   Validate each provider's envelope provenance instead of inventing attestation.
+- Pin the runtime's entire executable closure, not just a launcher or bundle.
+  Source-built CLI provenance does not by itself prove tool-less containment.
 
 ## Lesson Log
 
@@ -41,3 +43,7 @@
   Disabling nonessential traffic removed that auxiliary call. A live probe then
   verified two exact task models through assistant-message and usage metadata,
   in distinct sessions with tools/MCP disabled. This is not full-pipeline proof.
+- 2026-09-13: Added strict parsers for separate source-built response-provenance
+  runtimes. Reject missing/mixed identities, stale attempts, effect-capable
+  events and incomplete streams. Sixty behavioral tests pass. Neither parser
+  grants runtime admission; both require host-pinned conformance evidence.

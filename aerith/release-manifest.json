@@ -14,13 +14,13 @@
     ".gitignore": "9a41153bdf35381f85b94adbf0c01ebd0fdaed15e56ab7e7fd2352fe2d4e1b6d",
     "AGENTS.md": "8eaacf5185676a13fdf73b7da2fe5cadba0dfb7051b2e32b5243d089590227b5",
     "LICENSE": "2ba4f3a7418d62d3b9cafc0a8f57f8eefee235f626ad380c658e21e3fadc682b",
-    "PROJECT_MEMORY.md": "835e953d55f5753d51c8c9cfa419538e3b22528746844465f85f0cb6e6f15ddc",
-    "PUBLIC_FILES.json": "edcde07171bc0134e1614a0e163da5abd852914e1376f8debd046bb9b13c195f",
+    "PROJECT_MEMORY.md": "bfd379102872d1b4c4f0203cb8ec86ed1ad59a0acc63fa3dbcb5807678de6675",
+    "PUBLIC_FILES.json": "d546a7f23eda8d6e033b75fd3257a761b8360b45887589c1ae5db39c9d91026b",
     "README.md": "46ce057b9d5cfe88e74db794e918b6456423ea8cdb550e2807946293143840b7",
     "build_release.py": "cc3386e1456966e6e86129735f78501a2519e414077ba935dc0bd0ad4eb9de71",
     "probe_docker.py": "351cd075645fdcb32e406618a9de2fff4062394c6021d11c556a9aaaa0a697c6",
     "project-creator.py": "220808f0eaf4e9ee3516888f5fca3df28ecd55752ea3443d76335527879dafdd",
-    "project_creator/__init__.py": "7c3718f531909219ac2c1242e5608d6e2e8a5f7873458c8c0a83874b9c52b6f9",
+    "project_creator/__init__.py": "4196309f15b78ba074a3f795f8740c370d00b5b6422cacc41d22aa6ef1db8ddd",
     "project_creator/admission.py": "5c18c6902bb322ce5f44c054f77080c73b1d20c963e35cfcd9a03a85e172de9d",
     "project_creator/cli.py": "150a094379efa18d74fe89db5ed1fed8a02ed1f72a5fb852f6fa7ea70fa46d56",
     "project_creator/contracts.py": "e5ee518b8073ddf763c4542c8c1069deed0ee3ea938360e77b48aa820a6c479f",
@@ -29,7 +29,8 @@
     "project_creator/mirror.py": "9af0657b753747eae79a8b45056a61fc38440cae3a9808fd0569f94b3f9685d9",
     "project_creator/models.py": "af2354284baaf4a43e60f0a694e5f3091c461f2420d0840dad8f5c0cda6fc268",
     "project_creator/processes.py": "92581fd8c1797f7bf73bf17eabc95c5adcec9a7468f75f86acb1dec81a6c423e",
-    "project_creator/providers.py": "4a587ffa31fd5adc3470dcc4405d5d6940a5c9d0d02eef47c99049eb7064be4d",
+    "project_creator/provenance.py": "01eda0a29642e85f6ace6f6cbe7e85f0b8b41c2601b36d01c33648a606e35bd7",
+    "project_creator/providers.py": "dc4e2cc00430e605ba24763a94cfd57f40b3398dda4ab4771e86930124bd1502",
     "project_creator/store.py": "b127f839a427a42bd6795e76651f70ae0bf25587e46c5c7decfb22930c282df0",
     "project_creator/workspace.py": "2ff434c76129ea285a304335d045b88a04ef57234314f5dec6e9e0be84a8143e",
     "references/defect-review.md": "fbf4cf9a834e2f11eb86fdf62993043efc657367e6a9c0e157be63caa65bfc06",
@@ -40,6 +41,7 @@
     "skills/to-spec/SKILL.md": "755491154f83e7e4019bec41ba0cc1385599f6869705c542d7d860efaf429819",
     "skills/to-tickets/SKILL.md": "1e7944c84a6955a14b29f32b0d3c4964815fd11d76bb73643255bace6ad4790a",
     "tests/test_controller.py": "0d06856412c87a801cc9d77b3010ec72b7b87aff4390a9a4c20a0bbf7b5f4e48",
-    "tests/test_edges.py": "fa3fe1c2a2de9200106726a0dfc82826fff4b12f00c8b388a6c7b4dac1cdf41c"
+    "tests/test_edges.py": "fa3fe1c2a2de9200106726a0dfc82826fff4b12f00c8b388a6c7b4dac1cdf41c",
+    "tests/test_provenance.py": "4102b3510ee89269dd2de470b1c69a1acac986b463d714d1e8fcec52fa57d27b"
   }
 }

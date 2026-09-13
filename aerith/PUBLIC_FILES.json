@@ -19,6 +19,7 @@
   "project_creator/models.py",
   "project_creator/processes.py",
   "project_creator/providers.py",
+  "project_creator/provenance.py",
   "project_creator/store.py",
   "project_creator/workspace.py",
   "references/defect-review.md",
@@ -29,5 +30,6 @@
   "skills/implement/SKILL.md",
   "skills/spec-review/SKILL.md",
   "tests/test_controller.py",
-  "tests/test_edges.py"
+  "tests/test_edges.py",
+  "tests/test_provenance.py"
 ]
