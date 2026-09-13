@@ -65,15 +65,18 @@ verification. A standalone stage does not invoke preceding stages.
 - Claude stream parsing checks init metadata, actual assistant-message model,
   model usage, no tools/MCP, and an error-free final JSON result. Subscription
   mode refuses non-subscription auth and excludes API-routing environment flags.
-  This implementation is not itself a provider admission certificate.
+  Provider and auth processes run from a controller-created empty temporary
+  directory, never the target worktree; project data crosses only in the bounded
+  packet. This implementation is not itself a provider admission certificate.
 - The Codex data-only edge sends a bounded controller packet plus a strict
   stage-specific JSON schema. It accepts exactly one metadata record and one
   result record whose request, response, requested-model and provider-model
   identities agree, then validates the returned object again against the same
   closed stage schema. Retained capability evidence binds its measurement time,
-  executable bytes and runtime closure. On Windows, a reparse-free executable
-  is held read-only across suspended process creation to prevent replacement
-  between validation and launch. The source-built worker remains a separately reviewed,
+  executable bytes and runtime closure. On Windows, every mutable path ancestor,
+  the executable and each reviewed runtime dependency are held read-only through
+  child exit, preventing path retargeting or replacement between validation and
+  use. The source-built worker remains a separately reviewed,
   host-pinned executable; no ordinary Codex thread lifecycle is accepted by
   this edge.
 - A private GitHub outbox with idempotent markers and read-back. Unknown creates

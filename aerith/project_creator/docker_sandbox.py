@@ -42,7 +42,9 @@ class DockerSandbox:
         with tempfile.TemporaryDirectory(prefix="project-creator-docker-client-") as config_dir:
             env["DOCKER_CONFIG"] = config_dir
             return execute([self.exe, "--host", self.host, *args], cwd=cwd,
-                           timeout=timeout, cancelled=cancelled, env=env)
+                           timeout=timeout, cancelled=cancelled, env=env,
+                           expected_executable_sha256=self.config.get("proof", {}).get("executable_sha256"),
+                           expected_runtime_sha256=self.config.get("proof", {}).get("runtime_files", {}))
 
     def verify_daemon(self, cwd):
         result = self.command(["info", "--format", '{{json .ID}} {{json .OSType}}'], cwd)

@@ -346,6 +346,19 @@ class Contracts(unittest.TestCase):
             with self.assertRaisesRegex(GateError, "timeout"):
                 execute([sys.executable, "-c", "import time; time.sleep(10)"], cwd=Path(tmp), timeout=0.2)
 
+    def test_reviewed_executable_and_runtime_are_locked_for_real_launch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = root / "reviewed_worker.py"
+            script.write_text("print('reviewed')\n", encoding="utf-8")
+            result = execute(
+                [sys.executable, str(script)], cwd=root,
+                expected_executable_sha256=digest(Path(sys.executable).read_bytes()),
+                expected_runtime_sha256={str(script): digest(script.read_bytes())},
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout.strip(), "reviewed")
+
     def test_output_byte_bound_and_shell_refusal(self):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaisesRegex(GateError, "byte limit"):
@@ -388,6 +401,18 @@ class Contracts(unittest.TestCase):
             with self.assertRaisesRegex(GateError, "timeout"):
                 execute([sys.executable, "-c", parent], cwd=Path(tmp), timeout=0.25)
             time.sleep(1.1)
+            self.assertFalse(sentinel.exists())
+
+    def test_thread_setup_failure_still_kills_resumed_child(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sentinel = Path(tmp) / "setup-failure-effect.txt"
+            child = ("import time; from pathlib import Path; time.sleep(0.6); "
+                     "Path('setup-failure-effect.txt').write_text('bad')")
+            with patch("project_creator.processes.threading.Thread.start",
+                       side_effect=RuntimeError("synthetic thread start failure")):
+                with self.assertRaisesRegex(RuntimeError, "synthetic thread start failure"):
+                    execute([sys.executable, "-c", child], cwd=Path(tmp))
+            time.sleep(0.8)
             self.assertFalse(sentinel.exists())
 
     def test_admission_revocation_expiry_and_hash_tamper(self):

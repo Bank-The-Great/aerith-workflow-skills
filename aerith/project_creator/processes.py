@@ -91,8 +91,36 @@ def _reparse_free(path: Path) -> bool:
         current = current.parent
 
 
-def _locked_windows_executable(path: Path, expected_sha256: str):
-    """Open and hash an executable while denying concurrent write/delete."""
+def _valid_sha256(value) -> bool:
+    return (isinstance(value, str) and len(value) == 64
+            and all(character in "0123456789abcdef" for character in value))
+
+
+class _WindowsPathLock:
+    """Own all handles that make one reviewed pathname stable until close."""
+
+    def __init__(self, handles, stream):
+        self.handles = handles
+        self.stream = stream
+
+    def close(self):
+        import ctypes
+        if self.stream:
+            self.stream.close()
+            self.stream = None
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        for handle in reversed(self.handles):
+            kernel.CloseHandle(handle)
+        self.handles = []
+
+
+def _locked_windows_reviewed_path(path: Path, expected_sha256: str):
+    """Lock every mutable path component and the reviewed file itself.
+
+    Locking only the final file is insufficient: a writable ancestor directory
+    or junction can otherwise be renamed or retargeted between hashing and the
+    path-based CreateProcess/open performed by the child.
+    """
     import ctypes
     import msvcrt
     from ctypes import wintypes
@@ -101,36 +129,85 @@ def _locked_windows_executable(path: Path, expected_sha256: str):
                                    ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
                                    wintypes.HANDLE]
     kernel.CreateFileW.restype = wintypes.HANDLE
-    handle = kernel.CreateFileW(str(path), 0x80000000, 0x00000001, None, 3, 0x80, None)
-    if handle == wintypes.HANDLE(-1).value:
-        raise GateError("could not lock reviewed executable")
-    descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY)
-    stream = os.fdopen(descriptor, "rb", closefd=True)
-    observed = hashlib.sha256(stream.read()).hexdigest()
-    stream.seek(0)
-    if observed != expected_sha256:
-        stream.close()
-        raise GateError("reviewed executable changed before launch")
-    return stream
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    invalid = wintypes.HANDLE(-1).value
+    share_read = 0x00000001
+    open_existing = 3
+    backup_semantics = 0x02000000
+    open_reparse_point = 0x00200000
+    handles = []
+    stream = None
+    try:
+        # The drive/UNC anchor itself cannot be renamed by an unprivileged
+        # workspace writer. Hold every descendant directory without
+        # FILE_SHARE_WRITE or FILE_SHARE_DELETE before opening the next one.
+        parents = list(path.parents)
+        for directory in reversed(parents[:-1]):
+            handle = kernel.CreateFileW(str(directory), 0x80000000, share_read, None,
+                                        open_existing, backup_semantics | open_reparse_point, None)
+            if handle == invalid:
+                raise GateError("could not lock reviewed path ancestry")
+            handles.append(handle)
+            attributes = ctypes.windll.kernel32.GetFileAttributesW(str(directory))
+            if attributes == 0xFFFFFFFF or attributes & 0x400:
+                raise GateError("reviewed path ancestry contains a reparse point")
+        handle = kernel.CreateFileW(str(path), 0x80000000, share_read, None,
+                                    open_existing, 0x80 | open_reparse_point, None)
+        if handle == invalid:
+            raise GateError("could not lock reviewed file")
+        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY)
+        stream = os.fdopen(descriptor, "rb", closefd=True)
+        observed = hashlib.sha256(stream.read()).hexdigest()
+        stream.seek(0)
+        if observed != expected_sha256:
+            raise GateError("reviewed file changed before launch")
+        return _WindowsPathLock(handles, stream)
+    except BaseException:
+        if stream:
+            stream.close()
+        for handle in reversed(handles):
+            kernel.CloseHandle(handle)
+        raise
+
+
+def _reviewed_locks(executable_hash, runtime_hashes, argv):
+    runtime_hashes = {} if runtime_hashes is None else runtime_hashes
+    if not isinstance(runtime_hashes, dict) or not all(
+            isinstance(name, str) and _valid_sha256(value)
+            for name, value in runtime_hashes.items()):
+        raise GateError("invalid reviewed runtime closure")
+    reviewed = {}
+    if executable_hash is not None:
+        reviewed[argv[0]] = executable_hash
+    for name, value in runtime_hashes.items():
+        if name in reviewed and reviewed[name] != value:
+            raise GateError("conflicting reviewed file hashes")
+        reviewed[name] = value
+    locks = []
+    try:
+        for name, expected in reviewed.items():
+            path = Path(name)
+            if not path.is_absolute() or not _valid_sha256(expected) or not _reparse_free(path):
+                raise GateError("reviewed runtime path is not immutable")
+            if os.name == "nt":
+                locks.append(_locked_windows_reviewed_path(path, expected))
+            elif hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+                raise GateError("reviewed runtime changed before launch")
+        return locks
+    except BaseException:
+        for lock in reversed(locks):
+            lock.close()
+        raise
 
 
 def execute(argv: list[str], *, cwd: Path, stdin="", timeout=600, cancelled=lambda: False,
-            max_bytes=2_000_000, env=None, expected_executable_sha256=None) -> Result:
+            max_bytes=2_000_000, env=None, expected_executable_sha256=None,
+            expected_runtime_sha256=None) -> Result:
     if not isinstance(argv, list) or not argv or not all(isinstance(x, str) and "\x00" not in x for x in argv):
         raise GateError("expected fixed argv")
     if Path(argv[0]).suffix.lower() in {".cmd", ".bat", ".ps1"}:
         raise GateError("resolve CLI to its native executable or node script; no shell wrapper")
-    executable_lock = None
-    if expected_executable_sha256 is not None:
-        executable = Path(argv[0])
-        if (not executable.is_absolute() or len(expected_executable_sha256) != 64
-                or any(character not in "0123456789abcdef" for character in expected_executable_sha256)
-                or not _reparse_free(executable)):
-            raise GateError("reviewed executable path is not immutable")
-        if os.name == "nt":
-            executable_lock = _locked_windows_executable(executable, expected_executable_sha256)
-        elif hashlib.sha256(executable.read_bytes()).hexdigest() != expected_executable_sha256:
-            raise GateError("reviewed executable changed before launch")
+    reviewed_locks = _reviewed_locks(expected_executable_sha256, expected_runtime_sha256, argv)
     kwargs = {"cwd": str(cwd), "stdin": subprocess.PIPE, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "env": env}
     if os.name == "nt":
         kwargs["creationflags"] = 0x00000004 | 0x08000000  # SUSPENDED, NO_WINDOW
@@ -138,49 +215,48 @@ def execute(argv: list[str], *, cwd: Path, stdin="", timeout=600, cancelled=lamb
         kwargs["start_new_session"] = True
     start = time.monotonic()
     if cancelled():
+        for lock in reversed(reviewed_locks):
+            lock.close()
         raise GateError("cancelled before process launch")
     try:
         proc = subprocess.Popen(argv, **kwargs)
     except BaseException:
-        if executable_lock:
-            executable_lock.close()
+        for lock in reversed(reviewed_locks):
+            lock.close()
         raise
-    try:
-        close_job = _windows_job(proc, cancelled) if os.name == "nt" else None
-    except BaseException:
-        proc.kill()
-        proc.wait(timeout=10)
-        for stream in (proc.stdin, proc.stdout, proc.stderr):
-            stream.close()
-        if executable_lock:
-            executable_lock.close()
-        raise
-    if executable_lock:
-        executable_lock.close()
+    close_job = None
+    threads = []
+    writer_thread = None
     chunks = [bytearray(), bytearray()]
     oversized = threading.Event()
-    def reader(stream, dest):
-        while True:
-            chunk = stream.read(8192)
-            if not chunk:
-                return
-            if len(dest) + len(chunk) > max_bytes:
-                oversized.set()
-                return
-            dest.extend(chunk)
-    threads = [threading.Thread(target=reader, args=(stream, chunks[i]), daemon=True) for i, stream in enumerate((proc.stdout, proc.stderr))]
-    for t in threads:
-        t.start()
-    def writer():
-        try:
-            proc.stdin.write(stdin.encode("utf-8"))
-            proc.stdin.close()
-        except (OSError, BrokenPipeError, ValueError):
-            pass
-    writer_thread = threading.Thread(target=writer, daemon=True)
-    writer_thread.start()
     error = None
     try:
+        close_job = _windows_job(proc, cancelled) if os.name == "nt" else None
+
+        def reader(stream, dest):
+            while True:
+                chunk = stream.read(8192)
+                if not chunk:
+                    return
+                if len(dest) + len(chunk) > max_bytes:
+                    oversized.set()
+                    return
+                dest.extend(chunk)
+
+        threads = [threading.Thread(target=reader, args=(stream, chunks[i]), daemon=True)
+                   for i, stream in enumerate((proc.stdout, proc.stderr))]
+        for thread in threads:
+            thread.start()
+
+        def writer():
+            try:
+                proc.stdin.write(stdin.encode("utf-8"))
+                proc.stdin.close()
+            except (OSError, BrokenPipeError, ValueError):
+                pass
+
+        writer_thread = threading.Thread(target=writer, daemon=True)
+        writer_thread.start()
         while proc.poll() is None:
             if cancelled():
                 error = "cancelled"
@@ -195,19 +271,25 @@ def execute(argv: list[str], *, cwd: Path, stdin="", timeout=600, cancelled=lamb
     finally:
         # Close ownership even after the original child exits: descendants must
         # not outlive a call or retain pipe handles across a worker checkpoint.
-        if close_job:
-            close_job()
-        elif os.name != "nt":
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        proc.wait(timeout=10)
-        writer_thread.join(timeout=5)
-        for t in threads:
-            t.join(timeout=5)
-        for stream in (proc.stdin, proc.stdout, proc.stderr):
-            stream.close()
+        try:
+            if close_job:
+                close_job()
+            elif os.name != "nt":
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            proc.wait(timeout=10)
+            if writer_thread and writer_thread.ident is not None:
+                writer_thread.join(timeout=5)
+            for thread in threads:
+                if thread.ident is not None:
+                    thread.join(timeout=5)
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                stream.close()
+        finally:
+            for lock in reversed(reviewed_locks):
+                lock.close()
     if error or oversized.is_set():
         raise GateError(error or "output byte limit")
     try:

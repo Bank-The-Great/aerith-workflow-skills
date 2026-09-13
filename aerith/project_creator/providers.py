@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -57,6 +58,15 @@ def parse_claude_stream(text, requested):
     events = [json.loads(line) for line in text.splitlines() if line.strip()]
     if not all(isinstance(x, dict) for x in events):
         raise GateError("invalid provider stream")
+    # Treat every JSONL record as protocol, never as ignorable diagnostics.
+    # In particular, a top-level `user`/`tool_result` record proves that the
+    # supposedly data-only context performed or replayed an effect.
+    if (not events or events[0].get("type") != "system"
+            or events[-1].get("type") != "result"
+            or any(x.get("type") not in {"system", "assistant", "result"} for x in events)
+            or any(x.get("subtype") != "init" for x in events if x.get("type") == "system")
+            or any(x.get("type") == "result" for x in events[:-1])):
+        raise GateError("provider emitted an effect-bearing, unknown or out-of-order event")
     inits = [x for x in events if x.get("type") == "system" and x.get("subtype") == "init"]
     finals = [x for x in events if x.get("type") == "result"]
     if len(inits) != 1 or len(finals) != 1:
@@ -195,19 +205,28 @@ class CLIProvider:
         safe_text(prompt)
         self.audit("provider_start", {"vendor": self.name, "model_requested": model, "stage": stage,
                    "packet_hash": digest(packet), "adapter_hash": digest(self.config), "cost_class": "ruby", "billing": "existing-cli-auth; exact marginal spend unknown"})
-        if self.config.get("auth_mode") == "claude-subscription":
-            auth = execute([argv[0], "auth", "status", "--json"], cwd=directory, timeout=20, env=env,
-                           cancelled=self.cancelled,
-                           expected_executable_sha256=self.config.get("proof", {}).get("executable_sha256"))
-            try:
-                status = json.loads(auth.stdout)
-            except ValueError as exc:
-                raise GateError("subscription authentication could not be verified") from exc
-            if auth.returncode or status.get("loggedIn") is not True or status.get("authMethod") != "claude.ai":
-                raise GateError("existing Claude subscription authentication required")
-        result = execute(argv, cwd=directory, stdin=prompt, timeout=self.config.get("timeout_seconds", 900),
-                         cancelled=self.cancelled, env=env,
-                         expected_executable_sha256=self.config.get("proof", {}).get("executable_sha256"))
+        # Never make a subscription-authenticated provider process discover a
+        # project's local instructions, plugins, hooks or vendor configuration.
+        # The bounded packet is the only project data crossing this boundary.
+        with tempfile.TemporaryDirectory(prefix="project-creator-provider-") as clean_directory:
+            clean_cwd = Path(clean_directory)
+            if any(clean_cwd.iterdir()):
+                raise GateError("provider working directory is not empty")
+            if self.config.get("auth_mode") == "claude-subscription":
+                auth = execute([argv[0], "auth", "status", "--json"], cwd=clean_cwd, timeout=20, env=env,
+                               cancelled=self.cancelled,
+                               expected_executable_sha256=self.config.get("proof", {}).get("executable_sha256"),
+                               expected_runtime_sha256=self.config.get("proof", {}).get("runtime_files", {}))
+                try:
+                    status = json.loads(auth.stdout)
+                except ValueError as exc:
+                    raise GateError("subscription authentication could not be verified") from exc
+                if auth.returncode or status.get("loggedIn") is not True or status.get("authMethod") != "claude.ai":
+                    raise GateError("existing Claude subscription authentication required")
+            result = execute(argv, cwd=clean_cwd, stdin=prompt, timeout=self.config.get("timeout_seconds", 900),
+                             cancelled=self.cancelled, env=env,
+                             expected_executable_sha256=self.config.get("proof", {}).get("executable_sha256"),
+                             expected_runtime_sha256=self.config.get("proof", {}).get("runtime_files", {}))
         if result.returncode:
             self.audit("provider_failure", {"vendor": self.name, "exit_code": result.returncode})
             raise GateError("provider refused or failed; inspect authentication/model availability outside the AI transcript")
@@ -268,7 +287,12 @@ class VerificationRunner:
                 result = DockerSandbox(self.sandbox, self.read_set, cancelled=self.cancelled).run(command, worktree, test_id)
             else:
                 argv = [x.replace("{worktree}", str(worktree)) for x in self.sandbox["argv"]] + command
-                result = execute(argv, cwd=worktree, timeout=self.sandbox.get("timeout_seconds", 600), cancelled=self.cancelled)
+                result = execute(
+                    argv, cwd=worktree, timeout=self.sandbox.get("timeout_seconds", 600),
+                    cancelled=self.cancelled,
+                    expected_executable_sha256=self.sandbox.get("proof", {}).get("executable_sha256"),
+                    expected_runtime_sha256=self.sandbox.get("proof", {}).get("runtime_files", {}),
+                )
             # The runner is confined; diagnostic text remains untrusted data.
             # Credential-shaped output is refused rather than copied to a model.
             diagnostic = safe_text((result.stdout + "\n" + result.stderr)[:8000])

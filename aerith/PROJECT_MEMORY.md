@@ -66,3 +66,15 @@
   and bind retained evidence to its own timestamp, executable bytes and runtime
   closure. On Windows reject reparse components and hold the reviewed executable
   deny-write/delete until the suspended owned child is resumed.
+- 2026-09-14: A final-file lock does not bind a Windows pathname when a writable
+  ancestor can be renamed or a junction retargeted. Hold every mutable ancestor,
+  the executable and each reviewed runtime dependency through child exit; apply
+  the same proof to provider, native-verifier and Docker-client launches. Also
+  reject every unrecognized provider-stream record instead of filtering for the
+  records the controller hoped to receive.
+- 2026-09-14: Capability evidence collected in one project directory does not
+  authorize a provider in another directory with different local hooks or
+  instructions. Run every provider and auth check from a controller-created
+  empty temporary directory; pass project material only in the bounded packet.
+  Process ownership cleanup must begin immediately after Popen because thread
+  allocation/start can fail before the normal polling loop begins.

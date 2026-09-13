@@ -59,6 +59,18 @@ class ProviderEdges(unittest.TestCase):
             with self.assertRaises(GateError):
                 self.parse(events)
 
+    def test_claude_stream_rejects_effect_records_and_wrong_order(self):
+        effect = {"type": "user", "session_id": "fresh",
+                  "message": {"content": [{"type": "tool_result", "content": "untrusted"}]}}
+        events = stream()
+        with self.assertRaisesRegex(GateError, "effect-bearing"):
+            self.parse(events[:2] + [effect] + events[2:])
+        with self.assertRaisesRegex(GateError, "out-of-order"):
+            self.parse([events[1], events[0], events[2]])
+        status = {"type": "system", "subtype": "status", "session_id": "fresh"}
+        with self.assertRaisesRegex(GateError, "unknown"):
+            self.parse(events[:1] + [status] + events[1:])
+
     def test_error_and_missing_metadata_refused(self):
         for key in ("session_id", "tools", "mcp_servers"):
             events = stream()
@@ -110,6 +122,9 @@ class ProviderEdges(unittest.TestCase):
             for call in execute.call_args_list:
                 self.assertIs(call.kwargs["env"], snapshots[0])
                 self.assertEqual(call.kwargs["env"].get("PATH"), original_path)
+                self.assertNotEqual(call.kwargs["cwd"], Path.cwd())
+                self.assertTrue(call.kwargs["cwd"].name.startswith("project-creator-provider-"))
+                self.assertFalse(call.kwargs["cwd"].exists())
 
     def test_data_only_codex_receives_bounded_packet_and_strict_stage_schema(self):
         packet = {"instructions": "controller-only instructions", "role": "untrusted role data",
@@ -138,6 +153,7 @@ class ProviderEdges(unittest.TestCase):
         self.assertEqual(worker_request["input"]["role"], packet["role"])
         self.assertEqual(worker_request["output_schema"], SCHEMAS["implement"])
         self.assertEqual(execute.call_args.kwargs["expected_executable_sha256"], "a" * 64)
+        self.assertEqual(execute.call_args.kwargs["expected_runtime_sha256"], {})
 
     def test_data_only_codex_rejects_wrong_stage_shape_locally(self):
         packet = {"instructions": "controller-only instructions"}
@@ -226,6 +242,40 @@ class ProviderEdges(unittest.TestCase):
             self.assertFalse("DOCKER_CONTEXT" in call.kwargs["env"])
             self.assertFalse("DOCKER_HOST" in call.kwargs["env"])
             self.assertTrue("project-creator-docker-client-" in call.kwargs["env"]["DOCKER_CONFIG"])
+
+    def test_provider_and_verifiers_pass_the_complete_reviewed_runtime_closure(self):
+        proof = {"executable_sha256": "a" * 64,
+                 "runtime_files": {str(Path.cwd() / "reviewed.py"): "b" * 64}}
+        config = {"output": "codex-data-only", "auth_mode": "codex-subscription",
+                  "attestation": {"mode": "provider-response-header"},
+                  "argv": [sys.executable, "--model", "{model}"], "proof": proof}
+        packet = {"instructions": "bounded"}
+        request_id = digest(packet)
+        common = {"request_id": request_id, "response_id": "response-1",
+                  "requested_model": "chosen", "provider_model": "chosen"}
+        response = "\n".join(json.dumps(x) for x in (
+            {"type": "response_metadata", **common},
+            {"type": "result", **common,
+             "output": {"changes": [], "summary": "none", "questions": []}},
+        ))
+        with patch("project_creator.providers.validate_capability"), \
+                patch("project_creator.providers.execute", return_value=Result(0, response, "", 0)) as launch:
+            CLIProvider("codex", config, audit=lambda *a: None).invoke(
+                "implement", "chosen", packet, Path.cwd())
+            self.assertEqual(launch.call_args.kwargs["expected_runtime_sha256"], proof["runtime_files"])
+
+        native = {"argv": [sys.executable], "proof": proof}
+        with patch("project_creator.providers.validate_capability"), \
+                patch("project_creator.providers.execute", return_value=Result(0, "", "", 0)) as launch:
+            VerificationRunner(native, {"unit": ["-c", "pass"]}).run(["unit"], Path.cwd())
+            self.assertEqual(launch.call_args.kwargs["expected_executable_sha256"], "a" * 64)
+            self.assertEqual(launch.call_args.kwargs["expected_runtime_sha256"], proof["runtime_files"])
+
+        docker = docker_config() | {"proof": proof}
+        with patch("project_creator.docker_sandbox.execute", return_value=Result(0, "", "", 0)) as launch:
+            DockerSandbox(docker, ["source.py"]).command(["version"], Path.cwd())
+            self.assertEqual(launch.call_args.kwargs["expected_executable_sha256"], "a" * 64)
+            self.assertEqual(launch.call_args.kwargs["expected_runtime_sha256"], proof["runtime_files"])
 
     def test_docker_creates_inspects_then_starts_exact_entrypoint_without_pull(self):
         with tempfile.TemporaryDirectory() as tmp:
