@@ -151,3 +151,13 @@
   allowlist in addition to its pre-main runtime guard. Host probes must verify
   and memory-load package bytes before importing any candidate module and must
   use an explicit pinned Git executable rather than ambient PATH.
+- 2026-09-14: Worktree creation and ordinary implementation are different
+  lifecycle states. Persist a materialization boundary before dispatch, resume
+  an interrupted copy only from the exact branch blobs, and never compare later
+  implementation edits to the original branch as though construction were
+  still incomplete.
+- 2026-09-14: A crash-safe atomic replace can still leave its private temporary
+  after abrupt process death. Give controller temporaries a closed naming
+  format and sweep them on writable-store startup only after an exclusive file
+  handle, reparse check and parent-object identity check; an active writer's
+  sharing lock makes recovery skip its live temporary.

@@ -5,6 +5,7 @@ import contextlib
 import ctypes
 import json
 import os
+import re
 import sqlite3
 import stat
 import uuid
@@ -13,6 +14,9 @@ from pathlib import Path
 
 from .contracts import GateError, digest
 from .processes import _same_windows_path, _windows_final_path, stable_directory
+
+
+_ATOMIC_TEMPORARY = re.compile(r"^\.aerith-atomic-[0-9a-f]{32}\.tmp$")
 
 
 def now():
@@ -31,6 +35,8 @@ class Store:
             raise GateError("run ledger does not exist")
         if create:
             self.root.mkdir(parents=True, exist_ok=True)
+        if not read_only:
+            recover_atomic_temporaries(self.root)
         self.db = sqlite3.connect(str(db) if create else db.as_uri() + ("?mode=ro" if read_only else "?mode=rw"), uri=not create, timeout=10)
         self.db.row_factory = sqlite3.Row
         if not read_only:
@@ -146,7 +152,89 @@ def exclusive(path: Path):
                 fcntl.flock(stream, fcntl.LOCK_UN)
 
 
-def _atomic_text_windows(path: Path, raw: bytes, temporary: Path):
+def _delete_atomic_temporary_windows(path: Path, expected_parent_identity: str):
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                   ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                   wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.SetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    kernel.SetFileInformationByHandle.restype = wintypes.BOOL
+    invalid = wintypes.HANDLE(-1).value
+    handle = kernel.CreateFileW(
+        str(path), 0x00010000 | 0x00000080, 0, None, 3, 0x00200000, None)
+    if handle == invalid:
+        if ctypes.get_last_error() == 32:
+            return False
+        raise GateError("atomic temporary could not be opened for recovery")
+    try:
+        if not _same_windows_path(_windows_final_path(handle), path):
+            raise GateError("atomic temporary identity changed during recovery")
+        observed_parent = os.stat(path.parent, follow_symlinks=False)
+        if f"{observed_parent.st_dev}:{observed_parent.st_ino}" != expected_parent_identity:
+            raise GateError("atomic temporary parent changed during recovery")
+        attributes = kernel.GetFileAttributesW(str(path))
+        if attributes == 0xFFFFFFFF or attributes & 0x400:
+            raise GateError("atomic temporary is a reparse point")
+        disposition = wintypes.BOOL(1)
+        if not kernel.SetFileInformationByHandle(
+                handle, 4, ctypes.byref(disposition), ctypes.sizeof(disposition)):
+            raise GateError("atomic temporary recovery failed")
+    finally:
+        kernel.CloseHandle(handle)
+    return True
+
+
+def recover_atomic_temporaries(root: Path):
+    """Remove only this controller's abandoned private atomic temporaries."""
+    root = Path(root)
+    if not root.is_dir():
+        return 0
+    recovered = 0
+    for current, directories, files in os.walk(root, followlinks=False):
+        parent = Path(current)
+        directories[:] = [
+            name for name in directories
+            if not (parent / name).is_symlink()
+            and not (hasattr(parent / name, "is_junction")
+                     and (parent / name).is_junction())
+        ]
+        observed_parent = os.stat(parent, follow_symlinks=False)
+        parent_identity = f"{observed_parent.st_dev}:{observed_parent.st_ino}"
+        for name in files:
+            if not _ATOMIC_TEMPORARY.fullmatch(name):
+                continue
+            candidate = parent / name
+            if os.name == "nt":
+                recovered += int(_delete_atomic_temporary_windows(
+                    candidate, parent_identity))
+                continue
+            parent_descriptor = os.open(
+                parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                current_parent = os.fstat(parent_descriptor)
+                if f"{current_parent.st_dev}:{current_parent.st_ino}" != parent_identity:
+                    raise GateError("atomic temporary parent changed during recovery")
+                descriptor = os.open(
+                    name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=parent_descriptor)
+                try:
+                    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                        raise GateError("atomic temporary is not a regular file")
+                    os.unlink(name, dir_fd=parent_descriptor)
+                    recovered += 1
+                finally:
+                    os.close(descriptor)
+            finally:
+                os.close(parent_descriptor)
+    return recovered
+
+
+def _atomic_text_windows(path: Path, raw: bytes, temporary: Path,
+                         expected_parent_identity: str | None):
     """Replace atomically while holding and rechecking one opened parent identity."""
     import msvcrt
     from ctypes import wintypes
@@ -155,26 +243,20 @@ def _atomic_text_windows(path: Path, raw: bytes, temporary: Path):
                                    ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
                                    wintypes.HANDLE]
     kernel.CreateFileW.restype = wintypes.HANDLE
-    kernel.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int,
-                                                   ctypes.c_void_p, wintypes.DWORD]
-    kernel.SetFileInformationByHandle.restype = wintypes.BOOL
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.SetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    kernel.SetFileInformationByHandle.restype = wintypes.BOOL
     invalid = wintypes.HANDLE(-1).value
     directory_flags = 0x02000000 | 0x00200000
     parent_handle, handle, descriptor = None, None, None
     renamed = False
     try:
-        parent_handle = kernel.CreateFileW(
-            str(path.parent), 0x80000000,
-            0x00000001 | 0x00000002 | 0x00000004,
-            None, 3, directory_flags, None)
-        if parent_handle == invalid:
-            parent_handle = None
-            raise GateError("could not open atomic state parent")
-        attributes = kernel.GetFileAttributesW(str(path.parent))
-        if (attributes == 0xFFFFFFFF or attributes & 0x400
-                or not _same_windows_path(_windows_final_path(parent_handle), path.parent)):
-            raise GateError("atomic state parent identity changed")
+        # Create an empty temporary before reading private bytes. Then bind it
+        # to the opened parent identity. If the pathname was swapped before the
+        # parent was opened, the two final paths differ and no private data has
+        # been written. After this check, both the source handle and the rename
+        # destination are handle-relative to the same directory object.
         handle = kernel.CreateFileW(
             str(temporary), 0x80000000 | 0x40000000 | 0x00010000,
             0x00000001 | 0x00000002 | 0x00000004,
@@ -184,6 +266,23 @@ def _atomic_text_windows(path: Path, raw: bytes, temporary: Path):
             raise GateError("could not create atomic state temporary")
         if not _same_windows_path(_windows_final_path(handle), temporary):
             raise GateError("atomic state temporary identity changed")
+        parent_handle = kernel.CreateFileW(
+            str(path.parent), 0x80000000,
+            0x00000001 | 0x00000002 | 0x00000004,
+            None, 3, directory_flags, None)
+        if parent_handle == invalid:
+            parent_handle = None
+            raise GateError("could not open atomic state parent")
+        attributes = kernel.GetFileAttributesW(str(path.parent))
+        if (attributes == 0xFFFFFFFF or attributes & 0x400
+                or not _same_windows_path(_windows_final_path(parent_handle), path.parent)
+                or not _same_windows_path(_windows_final_path(handle), temporary)):
+            raise GateError("atomic state parent identity changed")
+        observed_parent = os.stat(path.parent, follow_symlinks=False)
+        observed_identity = f"{observed_parent.st_dev}:{observed_parent.st_ino}"
+        if (expected_parent_identity is not None
+                and observed_identity != expected_parent_identity):
+            raise GateError("atomic state parent identity changed")
         descriptor = msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_BINARY)
         handle = None
         with os.fdopen(descriptor, "r+b", closefd=True) as stream:
@@ -196,7 +295,7 @@ def _atomic_text_windows(path: Path, raw: bytes, temporary: Path):
                 raise GateError("atomic state temporary could not be verified")
 
             class FileRenameInfo(ctypes.Structure):
-                _fields_ = [("ReplaceIfExists", wintypes.BOOLEAN),
+                _fields_ = [("ReplaceIfExists", wintypes.BOOL),
                             ("RootDirectory", wintypes.HANDLE),
                             ("FileNameLength", wintypes.DWORD),
                             ("FileName", wintypes.WCHAR * 1)]
@@ -235,17 +334,22 @@ def _atomic_text_windows(path: Path, raw: bytes, temporary: Path):
                 pass
 
 
-def atomic_text(path: Path, text: str):
+def atomic_text(path: Path, text: str, *, expected_parent_identity: str | None = None):
     """Durably replace one state file without exposing a truncated canonical file."""
     path = Path(os.path.abspath(str(path)))
     path.parent.mkdir(parents=True, exist_ok=True)
     raw = text.encode("utf-8")
-    temporary = path.parent / ("." + path.name + "." + uuid.uuid4().hex + ".tmp")
+    temporary = path.parent / (".aerith-atomic-" + uuid.uuid4().hex + ".tmp")
     if os.name == "nt":
-        _atomic_text_windows(path, raw, temporary)
+        _atomic_text_windows(path, raw, temporary, expected_parent_identity)
         return
     renamed = False
     with stable_directory(path.parent):
+        observed_parent = os.stat(path.parent, follow_symlinks=False)
+        observed_identity = f"{observed_parent.st_dev}:{observed_parent.st_ino}"
+        if (expected_parent_identity is not None
+                and observed_identity != expected_parent_identity):
+            raise GateError("atomic state parent identity changed")
         descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_RDWR |
                              getattr(os, "O_NOFOLLOW", 0), 0o600)
         try:

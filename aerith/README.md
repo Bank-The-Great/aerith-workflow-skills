@@ -48,8 +48,16 @@ verification. A standalone stage does not invoke preceding stages.
   project locks shared across different state roots, edit journals, source
   hashes, and local isolated branches. Canonical packet, response, journal and
   receipt files are written to a unique same-directory temporary file, flushed,
-  read back and atomically replaced. Worktrees live outside the per-run state
-  directories so Windows directory locks do not weaken those atomic updates.
+  read back and atomically replaced. Writable-store startup removes only
+  abandoned controller temporaries after an exclusive handle and parent-object
+  check; a live writer's temporary cannot be removed. Worktrees live outside
+  the per-run state directories so Windows directory locks do not weaken those
+  atomic updates.
+- Interrupted worktree construction resumes from the exact pinned branch blob.
+  Existing regular files must already match that blob, missing files are
+  materialized under a pinned directory identity, and the completed boundary is
+  recorded before any model stage can run. Later implementation edits are never
+  mistaken for an incomplete initial checkout.
 - Controller-owned tests, acceptance coverage and dependency checks, P0/P1/P2
   gates, P3 dispositions, and separate ticket/final review packets. Every ticket
   has a canonical hash-bound Markdown file. Each review attempt has a durable

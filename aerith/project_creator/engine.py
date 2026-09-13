@@ -118,6 +118,7 @@ def start(store: Store, project: Path, objective: str, config: dict, catalog: di
            "standalone": standalone, "stage": standalone or STAGES[0], "status": "ready", "base": base,
            "branch": "project-creator/" + rid,
            "worktree": str(store.root / "worktrees" / rid),
+           "worktree_materialized": False,
            "answers": [], "questions": [], "artifacts": {}, "done_tickets": [], "feedback": [],
            "ticket_artifacts": {}, "review_sequence": 0, "active_review": None,
            "failure_counts": {}, "repair_attempts": {}, "created_at": now(), "revision": 0, "mirror_status": "not_configured"}
@@ -363,7 +364,8 @@ class Engine:
         root = Path(run["worktree"])
         git_dir = self._git_dir(run)
         read_set = list(set(run["config"]["read_set"] + run["config"]["write_set"]))
-        make_worktree(git_dir, root, run["branch"], run["base"], read_set)
+        if not run.get("worktree_materialized"):
+            raise GateError("isolated worktree has not completed materialization")
         allowed = run["config"]["write_set"]
         audit_scope(root, git_dir, run["base"], allowed, read_set)
         code = snapshot(root, read_set, git_dir, run["branch"])
@@ -529,7 +531,12 @@ class Engine:
               exclusive(project_lock(git_dir))):
             if directory_identity(git_dir) != run.get("git_dir_identity"):
                 raise GateError("pinned Git metadata directory identity changed")
-            make_worktree(git_dir, Path(run["worktree"]), run["branch"], run["base"], read_set)
+            if not run.get("worktree_materialized"):
+                make_worktree(git_dir, Path(run["worktree"]), run["branch"],
+                              run["base"], read_set)
+                run = self.store.get(run_id)
+                run["worktree_materialized"] = True
+                self.checkpoint(run, "worktree_materialized")
             with stable_directory(Path(run["worktree"])):
                 self.store.verify()
                 steps = 0

@@ -170,15 +170,51 @@ def make_worktree(git_dir: Path, target: Path, branch: str, base: str,
                   read_set: list[str]):
     base = _revision(base)
     ref = _branch_ref(branch)
-    if target.exists():
-        _revision(repo_git(git_dir, target, "rev-parse", "--verify", ref))
-        return
-    target.mkdir(parents=True)
-    repo_git(git_dir, target, "update-ref", ref, base, "0" * len(base))
+    created = not target.exists()
+    if created:
+        target.mkdir(parents=True)
+    elif (not target.is_dir() or target.is_symlink()
+          or (hasattr(target, "is_junction") and target.is_junction())):
+        raise GateError("isolated worktree path is not a regular directory")
+    with stable_directory(target):
+        target_identity = directory_identity(target)
+        if (target / ".git").exists():
+            raise GateError("isolated worktree must not contain Git metadata")
+        try:
+            head = _revision(repo_git(git_dir, target, "rev-parse", "--verify", ref))
+        except GateError:
+            repo_git(git_dir, target, "update-ref", ref, base, "0" * len(base))
+            head = base
+        if head != base:
+            # Only a completed delivery may advance this private branch. Missing
+            # files are reconstructed from that exact commit; later receipt
+            # validation decides whether the advance is authorized.
+            head = _revision(head)
     for name in sorted(set(read_set)):
-        _, _, content = _tree_blob(git_dir, target, base, name)
-        path = scoped_path(target, name, read_set)
-        atomic_text(path, content)
+        _, _, content = _tree_blob(git_dir, target, head, name)
+        with stable_directory(target):
+            if directory_identity(target) != target_identity:
+                raise GateError("isolated worktree identity changed")
+            path = scoped_path(target, name, read_set)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            parent_identity = directory_identity(path.parent)
+            if path.exists():
+                if (not path.is_file() or path.is_symlink()
+                        or (hasattr(path, "is_junction") and path.is_junction())):
+                    raise GateError("isolated source is not a regular file")
+                try:
+                    observed = safe_text(path.read_bytes().decode("utf-8"))
+                except UnicodeError as exc:
+                    raise GateError("isolated source is not UTF-8 text") from exc
+                if digest(observed) != digest(content):
+                    raise GateError("isolated source differs from its exact branch blob")
+                continue
+        atomic_text(path, content, expected_parent_identity=parent_identity)
+        with stable_directory(target):
+            if (directory_identity(target) != target_identity
+                    or directory_identity(path.parent) != parent_identity
+                    or digest(safe_text(path.read_bytes().decode("utf-8"))) != digest(content)):
+                raise GateError("isolated source materialization changed")
 
 
 def snapshot(root: Path, read_set: list[str], git_dir: Path, branch: str) -> dict:

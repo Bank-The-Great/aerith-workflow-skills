@@ -207,6 +207,25 @@ class Harness(unittest.TestCase):
             self.engine.run(run["id"], max_steps=1)
         self.assertEqual(self.log, [])
 
+    def test_existing_empty_worktree_recovers_missing_ref_and_files(self):
+        run = self.create()
+        root = Path(run["worktree"])
+        root.mkdir(parents=True)
+        self.engine.run(run["id"], max_steps=1)
+        self.assertEqual((root / "calc.py").read_text(encoding="utf-8"),
+                         "def increment(x):\n    return x\n")
+        self.assertEqual(self.log[0][0], "grill-with-docs")
+
+    def test_existing_partial_worktree_recovers_missing_files(self):
+        run = self.create()
+        root = Path(run["worktree"])
+        root.mkdir(parents=True)
+        repo_git(Path(run["git_dir"]), root, "update-ref",
+                 "refs/heads/" + run["branch"], run["base"], "0" * 40)
+        self.engine.run(run["id"], max_steps=1)
+        self.assertTrue((root / "calc.py").is_file())
+        self.assertEqual(self.log[0][0], "grill-with-docs")
+
     def test_no_weakening_verification_command_ids(self):
         bad = spec()
         bad["requirements"][0]["acceptance"][0]["test_ids"] = ["invented"]
@@ -357,7 +376,10 @@ class Contracts(unittest.TestCase):
 
     def test_atomic_state_preserves_old_file_on_pre_replace_process_death(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "state.json"
+            state = Path(tmp) / "controller"
+            store = Store(state, create=True)
+            store.close()
+            path = state / "run" / "state.json"
             atomic_text(path, "old")
             code = (
                 "import os,sys; from pathlib import Path; "
@@ -370,6 +392,51 @@ class Contracts(unittest.TestCase):
                                    check=False)
             self.assertEqual(child.returncode, 77)
             self.assertEqual(path.read_text(encoding="utf-8"), "old")
+            self.assertEqual(len(list(path.parent.glob(".aerith-atomic-*.tmp"))), 1)
+            store = Store(state)
+            store.close()
+            self.assertEqual(list(path.parent.glob(".aerith-atomic-*.tmp")), [])
+
+    def test_atomic_state_blocks_parent_swap_before_replace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "state"
+            parent.mkdir()
+            path = parent / "packet.json"
+            atomic_text(path, "old")
+            moved = Path(tmp) / "moved"
+            result = []
+
+            def swap_parent():
+                try:
+                    parent.rename(moved)
+                except OSError:
+                    result.append("blocked")
+                else:
+                    parent.mkdir()
+                    result.append("moved")
+
+            with patch("project_creator.store._before_atomic_replace",
+                       side_effect=swap_parent):
+                atomic_text(path, "new")
+            self.assertEqual(result, ["blocked"])
+            self.assertEqual(path.read_text(encoding="utf-8"), "new")
+            self.assertFalse(moved.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows sharing-lock recovery invariant")
+    def test_atomic_recovery_does_not_remove_a_live_temporary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "controller"
+            store = Store(state, create=True)
+            store.close()
+            orphan = state / ".aerith-atomic-0123456789abcdef0123456789abcdef.tmp"
+            orphan.write_text("pending", encoding="utf-8")
+            with orphan.open("rb"):
+                store = Store(state)
+                store.close()
+                self.assertTrue(orphan.exists())
+            store = Store(state)
+            store.close()
+            self.assertFalse(orphan.exists())
 
     def test_ticket_coverage_cycle_and_unknown(self):
         acs = criteria(spec(), {"unit"})
