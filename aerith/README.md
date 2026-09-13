@@ -69,7 +69,11 @@ verification. A standalone stage does not invoke preceding stages.
 - The Codex data-only edge sends a bounded controller packet plus a strict
   stage-specific JSON schema. It accepts exactly one metadata record and one
   result record whose request, response, requested-model and provider-model
-  identities agree. The source-built worker remains a separately reviewed,
+  identities agree, then validates the returned object again against the same
+  closed stage schema. Retained capability evidence binds its measurement time,
+  executable bytes and runtime closure. On Windows, a reparse-free executable
+  is held read-only across suspended process creation to prevent replacement
+  between validation and launch. The source-built worker remains a separately reviewed,
   host-pinned executable; no ordinary Codex thread lifecycle is accepted by
   this edge.
 - A private GitHub outbox with idempotent markers and read-back. Unknown creates
@@ -81,7 +85,8 @@ verification. A standalone stage does not invoke preceding stages.
   Requested models must be independently attested in provider output.
 - Capability checks require a separate host-bootstrap allowlist of complete
   reviewed adapter/proof hashes. Caller-created checksums and booleans cannot
-  grant authority. Versioned evidence must substantiate the claimed cases.
+  grant authority. Versioned evidence must substantiate the claimed cases and
+  repeat the exact proof timestamp, executable hash and runtime-file hashes.
   The trusted operator-owned host policy is outside every worker's write scope;
   this is not a defense against a malicious owner replacing their own policy.
 

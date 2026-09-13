@@ -13,7 +13,7 @@ from project_creator.contracts import GateError, digest
 from project_creator.providers import parse_claude_stream, provider_environment, VerificationRunner, CLIProvider, validate_capability
 from project_creator.docker_sandbox import DockerSandbox
 from project_creator.processes import Result
-from project_creator.output_schemas import SCHEMAS
+from project_creator.output_schemas import SCHEMAS, validate_output
 
 
 def docker_config():
@@ -102,8 +102,9 @@ class ProviderEdges(unittest.TestCase):
         def validate(cfg, purpose, *, environment):
             snapshots.append(environment)
             os.environ["PATH"] = "synthetic-change-after-validation"
+        valid_implement = json.dumps({"changes": [], "summary": "none", "questions": []})
         replies = [Result(0, '{"loggedIn":true,"authMethod":"claude.ai"}', "", 0),
-                   Result(0, "\n".join(json.dumps(x) for x in stream()), "", 0)]
+                   Result(0, "\n".join(json.dumps(x) for x in stream(result=valid_implement)), "", 0)]
         with patch.dict(os.environ), patch("project_creator.providers.validate_capability", side_effect=validate), patch("project_creator.providers.execute", side_effect=replies) as execute:
             CLIProvider("claude", config, audit=lambda *a: None).invoke("implement", "chosen", {}, Path.cwd())
             for call in execute.call_args_list:
@@ -123,7 +124,8 @@ class ProviderEdges(unittest.TestCase):
         ))
         config = {"output": "codex-data-only", "auth_mode": "codex-subscription",
                   "attestation": {"mode": "provider-response-header"},
-                  "argv": [sys.executable, "--model", "{model}"]}
+                  "argv": [sys.executable, "--model", "{model}"],
+                  "proof": {"executable_sha256": "a" * 64}}
         with patch("project_creator.providers.validate_capability"), \
                 patch("project_creator.providers.execute", return_value=Result(0, stream, "", 0.1)) as execute:
             result = CLIProvider("codex", config, audit=lambda *a: None).invoke(
@@ -135,6 +137,25 @@ class ProviderEdges(unittest.TestCase):
         self.assertNotIn("instructions", worker_request["input"])
         self.assertEqual(worker_request["input"]["role"], packet["role"])
         self.assertEqual(worker_request["output_schema"], SCHEMAS["implement"])
+        self.assertEqual(execute.call_args.kwargs["expected_executable_sha256"], "a" * 64)
+
+    def test_data_only_codex_rejects_wrong_stage_shape_locally(self):
+        packet = {"instructions": "controller-only instructions"}
+        request_id = digest(packet)
+        common = {"request_id": request_id, "response_id": "response-1",
+                  "requested_model": "chosen", "provider_model": "chosen"}
+        stream = "\n".join(json.dumps(x) for x in (
+            {"type": "response_metadata", **common},
+            {"type": "result", **common, "output": {"wrong_stage_shape": True}},
+        ))
+        config = {"output": "codex-data-only", "auth_mode": "codex-subscription",
+                  "attestation": {"mode": "provider-response-header"},
+                  "argv": [sys.executable, "--model", "{model}"]}
+        with patch("project_creator.providers.validate_capability"), \
+                patch("project_creator.providers.execute", return_value=Result(0, stream, "", 0.1)):
+            with self.assertRaisesRegex(GateError, "stage schema"):
+                CLIProvider("codex", config, audit=lambda *a: None).invoke(
+                    "implement", "chosen", packet, Path.cwd())
 
     def test_every_provider_schema_closes_all_object_shapes(self):
         def visit(value):
@@ -153,6 +174,19 @@ class ProviderEdges(unittest.TestCase):
                                         "implement", "spec-review", "defect-review"})
         for schema in SCHEMAS.values():
             visit(schema)
+
+    def test_local_schema_validator_rejects_bool_as_integer_and_extra_keys(self):
+        valid = {"verdict": "pass", "checked_criteria": [], "findings": [], "limitations": []}
+        self.assertIs(validate_output("spec-review", valid), valid)
+        for invalid in (
+            valid | {"extra": True},
+            valid | {"verdict": "unknown"},
+            valid | {"findings": [{"id": "F", "priority": True, "path": None,
+                                    "line": None, "message": "bad", "criterion": None,
+                                    "disposition": None}]},
+        ):
+            with self.assertRaisesRegex(GateError, "stage schema"):
+                validate_output("spec-review", invalid)
 
     def test_exact_json_fence_only(self):
         self.assertEqual(self.parse(stream(result='```json\n{"ok":true}\n```'))[0], {"ok": True})
@@ -247,12 +281,16 @@ class ProviderEdges(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             evidence = Path(tmp) / "evidence.json"
             cfg = docker_config() | {"kind": "docker"}
+            checked_at = datetime.now(timezone.utc).isoformat()
+            executable_sha256 = digest(Path(sys.executable).read_bytes())
             payload = {"schema_version": 1, "purpose": "verification", "configuration_hash": digest(cfg), "probe_harness_sha256": "fixture",
+                       "checked_at": checked_at, "executable_sha256": executable_sha256,
+                       "runtime_files": {},
                        "cases": {x: True for x in ("outside_read_denied", "outside_write_denied", "network_denied", "child_cleanup")}}
             evidence.write_text(json.dumps(payload))
             sha = digest(evidence.read_bytes())
-            cfg["proof"] = {"schema_version": 1, "probe_harness_sha256": "fixture", "checked_at": datetime.now(timezone.utc).isoformat(), "configuration_hash": digest(cfg),
-                            "executable_sha256": digest(Path(sys.executable).read_bytes()), "evidence_files": {sha: str(evidence)},
+            cfg["proof"] = {"schema_version": 1, "probe_harness_sha256": "fixture", "checked_at": checked_at, "configuration_hash": digest(cfg),
+                            "executable_sha256": executable_sha256, "runtime_files": {}, "evidence_files": {sha: str(evidence)},
                             "cases": {x: {"expected": True, "observed": True, "passed": True, "evidence_sha256": sha}
                                       for x in ("outside_read_denied", "outside_write_denied", "network_denied", "child_cleanup")}}
             with patch.dict("project_creator.providers._HOST_CAPABILITIES", {digest(cfg): "verification"}):
@@ -266,6 +304,30 @@ class ProviderEdges(unittest.TestCase):
             with patch.dict("project_creator.providers._HOST_CAPABILITIES", {digest(cfg): "verification"}):
                 with self.assertRaisesRegex(GateError, "does not substantiate"):
                     validate_capability(cfg, "verification")
+
+    def test_capability_rejects_rewrapped_old_or_other_executable_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = Path(tmp) / "evidence.json"
+            cfg = {"argv": [sys.executable]}
+            current = datetime.now(timezone.utc).isoformat()
+            cases = ("fresh_context", "tools_disabled", "ambient_disabled", "child_cleanup",
+                     "model_attestation", "subscription_auth_only")
+            base = {"schema_version": 1, "purpose": "provider", "configuration_hash": digest(cfg),
+                    "probe_harness_sha256": "fixture", "checked_at": "2000-01-01T00:00:00+00:00",
+                    "executable_sha256": "0" * 64, "runtime_files": {},
+                    "cases": {case: True for case in cases}}
+            evidence.write_text(json.dumps(base))
+            evidence_hash = digest(evidence.read_bytes())
+            cfg["proof"] = {"schema_version": 1, "probe_harness_sha256": "fixture",
+                            "checked_at": current, "configuration_hash": digest(cfg),
+                            "executable_sha256": digest(Path(sys.executable).read_bytes()),
+                            "environment_hash": digest(provider_environment(cfg)),
+                            "runtime_files": {}, "evidence_files": {evidence_hash: str(evidence)},
+                            "cases": {case: {"expected": True, "observed": True, "passed": True,
+                                             "evidence_sha256": evidence_hash} for case in cases}}
+            with patch.dict("project_creator.providers._HOST_CAPABILITIES", {digest(cfg): "provider"}):
+                with self.assertRaisesRegex(GateError, "does not substantiate"):
+                    validate_capability(cfg, "provider", environment=provider_environment(cfg))
 
     def test_self_forged_receipt_does_not_grant_host_authority(self):
         cfg = docker_config() | {"proof": {"passed": True, "cases": {"all": True}}}

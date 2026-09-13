@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .contracts import GateError, digest, safe_text
 from .processes import execute, minimal_environment
-from .output_schemas import schema_for
+from .output_schemas import schema_for, validate_output
 from .provenance import parse_codex_data_only, parse_codex_provenance, parse_gemini_provenance
 
 _HOST_CAPABILITIES = {}
@@ -118,11 +118,15 @@ def validate_capability(config: dict, purpose: str, *, environment=None):
             raise GateError(f"{purpose} retained test evidence absent or changed")
         try:
             measured = json.loads(raw)
+            measured_at = measured.get("checked_at", measured.get("at")) if isinstance(measured, dict) else None
             valid = (isinstance(measured, dict) and measured.get("schema_version") == 1
                      and measured.get("purpose") == purpose and measured.get("configuration_hash") == expected
                      and isinstance(measured.get("cases"), dict) and measured["cases"].get(case) is True
                      and measured.get("probe_harness_sha256") == proof.get("probe_harness_sha256")
-                     and bool(measured.get("probe_harness_sha256")))
+                     and bool(measured.get("probe_harness_sha256"))
+                     and measured_at == proof.get("checked_at")
+                     and measured.get("executable_sha256") == proof.get("executable_sha256")
+                     and measured.get("runtime_files") == proof.get("runtime_files", {}))
         except ValueError:
             valid = False
         if not valid:
@@ -192,14 +196,18 @@ class CLIProvider:
         self.audit("provider_start", {"vendor": self.name, "model_requested": model, "stage": stage,
                    "packet_hash": digest(packet), "adapter_hash": digest(self.config), "cost_class": "ruby", "billing": "existing-cli-auth; exact marginal spend unknown"})
         if self.config.get("auth_mode") == "claude-subscription":
-            auth = execute([argv[0], "auth", "status", "--json"], cwd=directory, timeout=20, env=env, cancelled=self.cancelled)
+            auth = execute([argv[0], "auth", "status", "--json"], cwd=directory, timeout=20, env=env,
+                           cancelled=self.cancelled,
+                           expected_executable_sha256=self.config.get("proof", {}).get("executable_sha256"))
             try:
                 status = json.loads(auth.stdout)
             except ValueError as exc:
                 raise GateError("subscription authentication could not be verified") from exc
             if auth.returncode or status.get("loggedIn") is not True or status.get("authMethod") != "claude.ai":
                 raise GateError("existing Claude subscription authentication required")
-        result = execute(argv, cwd=directory, stdin=prompt, timeout=self.config.get("timeout_seconds", 900), cancelled=self.cancelled, env=env)
+        result = execute(argv, cwd=directory, stdin=prompt, timeout=self.config.get("timeout_seconds", 900),
+                         cancelled=self.cancelled, env=env,
+                         expected_executable_sha256=self.config.get("proof", {}).get("executable_sha256"))
         if result.returncode:
             self.audit("provider_failure", {"vendor": self.name, "exit_code": result.returncode})
             raise GateError("provider refused or failed; inspect authentication/model availability outside the AI transcript")
@@ -232,6 +240,7 @@ class CLIProvider:
                 raise ValueError()
         except (ValueError, KeyError, TypeError) as exc:
             raise GateError("provider did not return the required JSON object") from exc
+        response = validate_output(stage, response)
         safe_text(json.dumps(response, ensure_ascii=False))
         self.audit("provider_end", {"vendor": self.name, "model_requested": model,
                    "model_attested": actual, "metadata": metadata, "elapsed_seconds": result.elapsed, "output_hash": digest(response)})

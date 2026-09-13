@@ -95,9 +95,13 @@ print(json.dumps(out))
         if outside.read_text(encoding="utf-8") != "synthetic outside canary":
             raise GateError("outside canary changed")
         harness_hash = digest(Path(__file__).read_bytes())
+        executable_sha256 = digest(executable.read_bytes())
+        runtime = Path(__file__).resolve().parent / "project_creator" / "docker_sandbox.py"
+        runtime_files = {str(runtime): digest(runtime.read_bytes())}
         payload = {"schema_version": 1, "purpose": "verification", "probe_harness_sha256": harness_hash,
-                   "at": datetime.now(timezone.utc).isoformat(), "image": image,
+                   "checked_at": datetime.now(timezone.utc).isoformat(), "image": image,
                    "configuration_hash": digest(cfg), "cases": cases,
+                   "executable_sha256": executable_sha256, "runtime_files": runtime_files,
                    "daemon_inspection": runner.last_inspection,
                    "daemon_id": daemon_id, "container_id": runner.last_container_id,
                    "mounts_sha256": runner.last_mounts_hash, "source_packet_sha256": digest(program),
@@ -109,9 +113,9 @@ print(json.dumps(out))
         atomic_text(report, raw)
         report_hash = digest(raw)
         cfg["proof"] = {"schema_version": 1, "probe_harness_sha256": harness_hash,
-                        "checked_at": payload["at"], "configuration_hash": payload["configuration_hash"],
-                        "executable_sha256": digest(executable.read_bytes()),
-                        "runtime_files": {str((Path(__file__).resolve().parent / "project_creator" / "docker_sandbox.py")): digest((Path(__file__).resolve().parent / "project_creator" / "docker_sandbox.py").read_bytes())},
+                        "checked_at": payload["checked_at"], "configuration_hash": payload["configuration_hash"],
+                        "executable_sha256": executable_sha256,
+                        "runtime_files": runtime_files,
                         "evidence_files": {report_hash: str(report.resolve())},
                         "cases": {key: {"passed": True, "expected": True, "observed": True,
                                        "evidence_sha256": report_hash} for key in cases}}

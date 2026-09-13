@@ -61,3 +61,8 @@
   not a filtered ordinary thread stream. The controller now sends strict
   per-stage schemas and accepts exactly two identity-bound JSONL records;
   executable containment and live subscription proof remain host-owned gates.
+- 2026-09-13: Provider-side structured-output enforcement is not an integrity
+  boundary. Validate the object locally against the same closed stage schema,
+  and bind retained evidence to its own timestamp, executable bytes and runtime
+  closure. On Windows reject reparse components and hold the reviewed executable
+  deny-write/delete until the suspended owned child is resumed.

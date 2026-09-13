@@ -6,6 +6,7 @@ code. This transport adds cancellation and byte limits and never logs stderr.
 from __future__ import annotations
 
 import os
+import hashlib
 import signal
 import subprocess
 import threading
@@ -73,11 +74,63 @@ def _windows_job(proc, cancelled=lambda: False):
     return lambda: k.CloseHandle(job)
 
 
-def execute(argv: list[str], *, cwd: Path, stdin="", timeout=600, cancelled=lambda: False, max_bytes=2_000_000, env=None) -> Result:
+def _reparse_free(path: Path) -> bool:
+    """Reject Windows reparse points in the executable's existing path chain."""
+    if os.name != "nt":
+        return not path.is_symlink()
+    import ctypes
+    invalid = 0xFFFFFFFF
+    reparse = 0x400
+    current = path
+    while True:
+        attributes = ctypes.windll.kernel32.GetFileAttributesW(str(current))
+        if attributes == invalid or attributes & reparse:
+            return False
+        if current.parent == current:
+            return True
+        current = current.parent
+
+
+def _locked_windows_executable(path: Path, expected_sha256: str):
+    """Open and hash an executable while denying concurrent write/delete."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                   ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                   wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    handle = kernel.CreateFileW(str(path), 0x80000000, 0x00000001, None, 3, 0x80, None)
+    if handle == wintypes.HANDLE(-1).value:
+        raise GateError("could not lock reviewed executable")
+    descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY)
+    stream = os.fdopen(descriptor, "rb", closefd=True)
+    observed = hashlib.sha256(stream.read()).hexdigest()
+    stream.seek(0)
+    if observed != expected_sha256:
+        stream.close()
+        raise GateError("reviewed executable changed before launch")
+    return stream
+
+
+def execute(argv: list[str], *, cwd: Path, stdin="", timeout=600, cancelled=lambda: False,
+            max_bytes=2_000_000, env=None, expected_executable_sha256=None) -> Result:
     if not isinstance(argv, list) or not argv or not all(isinstance(x, str) and "\x00" not in x for x in argv):
         raise GateError("expected fixed argv")
     if Path(argv[0]).suffix.lower() in {".cmd", ".bat", ".ps1"}:
         raise GateError("resolve CLI to its native executable or node script; no shell wrapper")
+    executable_lock = None
+    if expected_executable_sha256 is not None:
+        executable = Path(argv[0])
+        if (not executable.is_absolute() or len(expected_executable_sha256) != 64
+                or any(character not in "0123456789abcdef" for character in expected_executable_sha256)
+                or not _reparse_free(executable)):
+            raise GateError("reviewed executable path is not immutable")
+        if os.name == "nt":
+            executable_lock = _locked_windows_executable(executable, expected_executable_sha256)
+        elif hashlib.sha256(executable.read_bytes()).hexdigest() != expected_executable_sha256:
+            raise GateError("reviewed executable changed before launch")
     kwargs = {"cwd": str(cwd), "stdin": subprocess.PIPE, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "env": env}
     if os.name == "nt":
         kwargs["creationflags"] = 0x00000004 | 0x08000000  # SUSPENDED, NO_WINDOW
@@ -86,7 +139,12 @@ def execute(argv: list[str], *, cwd: Path, stdin="", timeout=600, cancelled=lamb
     start = time.monotonic()
     if cancelled():
         raise GateError("cancelled before process launch")
-    proc = subprocess.Popen(argv, **kwargs)
+    try:
+        proc = subprocess.Popen(argv, **kwargs)
+    except BaseException:
+        if executable_lock:
+            executable_lock.close()
+        raise
     try:
         close_job = _windows_job(proc, cancelled) if os.name == "nt" else None
     except BaseException:
@@ -94,7 +152,11 @@ def execute(argv: list[str], *, cwd: Path, stdin="", timeout=600, cancelled=lamb
         proc.wait(timeout=10)
         for stream in (proc.stdin, proc.stdout, proc.stderr):
             stream.close()
+        if executable_lock:
+            executable_lock.close()
         raise
+    if executable_lock:
+        executable_lock.close()
     chunks = [bytearray(), bytearray()]
     oversized = threading.Event()
     def reader(stream, dest):
