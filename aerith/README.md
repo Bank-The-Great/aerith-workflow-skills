@@ -65,9 +65,10 @@ verification. A standalone stage does not invoke preceding stages.
 - Claude stream parsing checks init metadata, actual assistant-message model,
   model usage, no tools/MCP, and an error-free final JSON result. Subscription
   mode refuses non-subscription auth and excludes API-routing environment flags.
-  Provider and auth processes run from a controller-created empty temporary
-  directory, never the target worktree; project data crosses only in the bounded
-  packet. This implementation is not itself a provider admission certificate.
+  Provider and auth processes run from separate controller-created empty
+  temporary directories, never the target worktree or each other's directory;
+  project data crosses only in the bounded packet. This implementation is not
+  itself a provider admission certificate.
 - The Codex data-only edge sends a bounded controller packet plus a strict
   stage-specific JSON schema. It accepts exactly one metadata record and one
   result record whose request, response, requested-model and provider-model

@@ -208,12 +208,12 @@ class CLIProvider:
         # Never make a subscription-authenticated provider process discover a
         # project's local instructions, plugins, hooks or vendor configuration.
         # The bounded packet is the only project data crossing this boundary.
-        with tempfile.TemporaryDirectory(prefix="project-creator-provider-") as clean_directory:
-            clean_cwd = Path(clean_directory)
-            if any(clean_cwd.iterdir()):
-                raise GateError("provider working directory is not empty")
-            if self.config.get("auth_mode") == "claude-subscription":
-                auth = execute([argv[0], "auth", "status", "--json"], cwd=clean_cwd, timeout=20, env=env,
+        if self.config.get("auth_mode") == "claude-subscription":
+            with tempfile.TemporaryDirectory(prefix="project-creator-provider-auth-") as auth_directory:
+                auth_cwd = Path(auth_directory)
+                if any(auth_cwd.iterdir()):
+                    raise GateError("provider auth working directory is not empty")
+                auth = execute([argv[0], "auth", "status", "--json"], cwd=auth_cwd, timeout=20, env=env,
                                cancelled=self.cancelled,
                                expected_executable_sha256=self.config.get("proof", {}).get("executable_sha256"),
                                expected_runtime_sha256=self.config.get("proof", {}).get("runtime_files", {}))
@@ -223,7 +223,13 @@ class CLIProvider:
                     raise GateError("subscription authentication could not be verified") from exc
                 if auth.returncode or status.get("loggedIn") is not True or status.get("authMethod") != "claude.ai":
                     raise GateError("existing Claude subscription authentication required")
-            result = execute(argv, cwd=clean_cwd, stdin=prompt, timeout=self.config.get("timeout_seconds", 900),
+        # Auth and inference never reuse a directory. Even a correctly pinned
+        # auth process cannot leave local instructions for the model process.
+        with tempfile.TemporaryDirectory(prefix="project-creator-provider-inference-") as inference_directory:
+            inference_cwd = Path(inference_directory)
+            if any(inference_cwd.iterdir()):
+                raise GateError("provider inference working directory is not empty")
+            result = execute(argv, cwd=inference_cwd, stdin=prompt, timeout=self.config.get("timeout_seconds", 900),
                              cancelled=self.cancelled, env=env,
                              expected_executable_sha256=self.config.get("proof", {}).get("executable_sha256"),
                              expected_runtime_sha256=self.config.get("proof", {}).get("runtime_files", {}))

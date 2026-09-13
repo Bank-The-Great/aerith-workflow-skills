@@ -115,9 +115,17 @@ class ProviderEdges(unittest.TestCase):
             snapshots.append(environment)
             os.environ["PATH"] = "synthetic-change-after-validation"
         valid_implement = json.dumps({"changes": [], "summary": "none", "questions": []})
-        replies = [Result(0, '{"loggedIn":true,"authMethod":"claude.ai"}', "", 0),
-                   Result(0, "\n".join(json.dumps(x) for x in stream(result=valid_implement)), "", 0)]
-        with patch.dict(os.environ), patch("project_creator.providers.validate_capability", side_effect=validate), patch("project_creator.providers.execute", side_effect=replies) as execute:
+        replies = iter([Result(0, '{"loggedIn":true,"authMethod":"claude.ai"}', "", 0),
+                        Result(0, "\n".join(json.dumps(x) for x in stream(result=valid_implement)), "", 0)])
+        directories = []
+        def launch(*args, **kwargs):
+            cwd = kwargs["cwd"]
+            self.assertEqual(list(cwd.iterdir()), [])
+            directories.append(cwd)
+            if len(directories) == 1:
+                (cwd / "CLAUDE.md").write_text("synthetic auth pollution", encoding="utf-8")
+            return next(replies)
+        with patch.dict(os.environ), patch("project_creator.providers.validate_capability", side_effect=validate), patch("project_creator.providers.execute", side_effect=launch) as execute:
             CLIProvider("claude", config, audit=lambda *a: None).invoke("implement", "chosen", {}, Path.cwd())
             for call in execute.call_args_list:
                 self.assertIs(call.kwargs["env"], snapshots[0])
@@ -125,6 +133,9 @@ class ProviderEdges(unittest.TestCase):
                 self.assertNotEqual(call.kwargs["cwd"], Path.cwd())
                 self.assertTrue(call.kwargs["cwd"].name.startswith("project-creator-provider-"))
                 self.assertFalse(call.kwargs["cwd"].exists())
+            self.assertEqual(len({str(path) for path in directories}), 2)
+            self.assertTrue(directories[0].name.startswith("project-creator-provider-auth-"))
+            self.assertTrue(directories[1].name.startswith("project-creator-provider-inference-"))
 
     def test_data_only_codex_receives_bounded_packet_and_strict_stage_schema(self):
         packet = {"instructions": "controller-only instructions", "role": "untrusted role data",

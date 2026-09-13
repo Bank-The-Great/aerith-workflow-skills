@@ -78,3 +78,7 @@
   empty temporary directory; pass project material only in the bounded packet.
   Process ownership cleanup must begin immediately after Popen because thread
   allocation/start can fail before the normal polling loop begins.
+- 2026-09-14: An empty provider directory can become ambient input if a preceding
+  auth-status process shares it and leaves a local instruction/config file.
+  Give auth and inference different newly created empty directories, and test
+  the boundary by deliberately polluting the auth directory.

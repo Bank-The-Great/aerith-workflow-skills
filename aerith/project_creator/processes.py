@@ -214,6 +214,12 @@ def execute(argv: list[str], *, cwd: Path, stdin="", timeout=600, cancelled=lamb
     else:
         kwargs["start_new_session"] = True
     start = time.monotonic()
+    close_job = None
+    threads = []
+    writer_thread = None
+    chunks = [bytearray(), bytearray()]
+    oversized = threading.Event()
+    error = None
     if cancelled():
         for lock in reversed(reviewed_locks):
             lock.close()
@@ -224,12 +230,6 @@ def execute(argv: list[str], *, cwd: Path, stdin="", timeout=600, cancelled=lamb
         for lock in reversed(reviewed_locks):
             lock.close()
         raise
-    close_job = None
-    threads = []
-    writer_thread = None
-    chunks = [bytearray(), bytearray()]
-    oversized = threading.Event()
-    error = None
     try:
         close_job = _windows_job(proc, cancelled) if os.name == "nt" else None
 
