@@ -254,13 +254,16 @@ class CLIProvider:
         self.name, self.config, self.audit, self.cancelled = name, config, audit, cancelled
 
     def invoke(self, stage: str, model: str, packet: dict, directory: Path) -> dict:
-        if (self.config.get("output") not in _ADMITTED_PROVIDER_OUTPUTS
+        if (self.name != "codex" or self.config.get("output") not in _ADMITTED_PROVIDER_OUTPUTS
                 or self.config.get("filesystem_scope") != "codex-home-auth-only"):
             raise GateError("only a reviewed data-only provider worker may be launched")
         if self.config.get("auth_mode") != "codex-subscription":
             raise GateError("data-only provider requires subscription-only authentication")
-        if (self.config.get("argv", [None])[1:] != ["--model", "{model}"]
-                or Path(self.config["argv"][0]).suffix.lower() != ".exe"):
+        template = self.config.get("argv")
+        if (not isinstance(template, list) or len(template) != 3
+                or template[1:] != ["--model", "{model}"]
+                or not isinstance(template[0], str) or Path(template[0]).suffix.lower() != ".exe"
+                or self.config.get("attestation") != {"mode": "provider-response-header"}):
             raise GateError("data-only provider requires one reviewed native executable")
         env = provider_environment(self.config)
         validate_capability(self.config, "provider", environment=env)
@@ -291,7 +294,7 @@ class CLIProvider:
                              cancelled=self.cancelled, env=env,
                              expected_executable_sha256=self.config.get("proof", {}).get("executable_sha256"),
                              expected_runtime_sha256=self.config.get("proof", {}).get("runtime_files", {}),
-                             data_only_cwd=True)
+                             system_cwd=True)
         if result.returncode:
             self.audit("provider_failure", {"vendor": self.name, "exit_code": result.returncode})
             raise GateError("provider refused or failed; inspect authentication/model availability outside the AI transcript")

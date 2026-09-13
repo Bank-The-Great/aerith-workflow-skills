@@ -90,8 +90,9 @@ verification. A standalone stage does not invoke preceding stages.
   child exit, preventing path retargeting or replacement between validation and
   use. Its reviewed code disables project/ancestor configuration discovery and
   reads only the Codex auth home plus bounded stdin. The Windows transport uses
-  a locked, non-writable system CWD to keep DLL lookup away from the project; it
-  does not claim that CWD would isolate a general vendor CLI. The source-built
+  a locked, non-writable system CWD for that worker and the fixed Docker client
+  to keep DLL lookup away from the project; it does not claim that CWD would
+  isolate a general vendor CLI. The source-built
   worker remains a separately reviewed, host-pinned standalone executable with
   no runtime-file closure; no ordinary Codex thread lifecycle is accepted.
 - A private GitHub outbox with idempotent markers and read-back. Unknown creates

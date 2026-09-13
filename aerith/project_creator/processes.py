@@ -171,8 +171,8 @@ def _locked_windows_reviewed_path(path: Path, expected_sha256: str):
         raise
 
 
-def _locked_windows_data_worker_directory():
-    """Return a system-owned CWD for a reviewed data-only executable.
+def _locked_windows_system_directory():
+    """Return a system-owned CWD for an admitted non-discovering executable.
 
     This protects current-directory DLL lookup and avoids the project directory.
     It is not an ambient-instruction boundary for a general vendor CLI because a
@@ -201,7 +201,7 @@ def _locked_windows_data_worker_directory():
         raise GateError("neutral provider working directory is not trusted")
     ambient_names = {"AGENTS.md", "CLAUDE.md", "GEMINI.md", ".claude", ".codex", ".gemini", ".agents", ".mcp.json"}
     if any((path / name).exists() for name in ambient_names):
-        raise GateError("data-worker system directory contains ambient configuration")
+            raise GateError("admitted system directory contains ambient configuration")
 
     # Directory-specific FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY and
     # FILE_DELETE_CHILD, plus the standard delete/DACL/owner rights.  Probe each
@@ -213,9 +213,9 @@ def _locked_windows_data_worker_directory():
         handle = kernel.CreateFileW(str(path), right, share_all, None, 3, flags, None)
         if handle != invalid:
             kernel.CloseHandle(handle)
-            raise GateError("data-worker system directory is writable by the active token")
+            raise GateError("admitted system directory is writable by the active token")
         if ctypes.get_last_error() != 5:  # ERROR_ACCESS_DENIED is the only safe result.
-            raise GateError("data-worker system-directory rights could not be verified")
+            raise GateError("admitted system-directory rights could not be verified")
 
     handles = []
     try:
@@ -224,13 +224,13 @@ def _locked_windows_data_worker_directory():
             handle = kernel.CreateFileW(str(directory), 0x80000000, 0x00000001,
                                         None, 3, flags, None)
             if handle == invalid:
-                raise GateError("could not lock data-worker system directory")
+                raise GateError("could not lock admitted system directory")
             handles.append(handle)
             attributes = ctypes.windll.kernel32.GetFileAttributesW(str(directory))
             if attributes == 0xFFFFFFFF or attributes & 0x400:
-                raise GateError("data-worker system directory contains a reparse point")
+                raise GateError("admitted system directory contains a reparse point")
         if any((path / name).exists() for name in ambient_names):
-            raise GateError("data-worker system directory gained ambient configuration")
+            raise GateError("admitted system directory gained ambient configuration")
         return path, _WindowsPathLock(handles, None)
     except BaseException:
         for handle in reversed(handles):
@@ -280,20 +280,20 @@ def reviewed_files(expected_hashes):
 
 def execute(argv: list[str], *, cwd: Path, stdin="", timeout=600, cancelled=lambda: False,
             max_bytes=2_000_000, env=None, expected_executable_sha256=None,
-            expected_runtime_sha256=None, data_only_cwd=False) -> Result:
+            expected_runtime_sha256=None, system_cwd=False) -> Result:
     if not isinstance(argv, list) or not argv or not all(isinstance(x, str) and "\x00" not in x for x in argv):
         raise GateError("expected fixed argv")
     if Path(argv[0]).suffix.lower() in {".cmd", ".bat", ".ps1"}:
         raise GateError("resolve CLI to its native executable or node script; no shell wrapper")
     reviewed_locks = _reviewed_locks(expected_executable_sha256, expected_runtime_sha256, argv)
     working_directory = Path(cwd)
-    if data_only_cwd:
+    if system_cwd:
         if os.name != "nt":
             for lock in reversed(reviewed_locks):
                 lock.close()
-            raise GateError("data-worker system directory is unsupported on this host")
+            raise GateError("admitted system directory is unsupported on this host")
         try:
-            working_directory, lock = _locked_windows_data_worker_directory()
+            working_directory, lock = _locked_windows_system_directory()
             reviewed_locks.append(lock)
         except BaseException:
             for lock in reversed(reviewed_locks):

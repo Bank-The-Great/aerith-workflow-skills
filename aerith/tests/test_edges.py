@@ -107,6 +107,24 @@ class ProviderEdges(unittest.TestCase):
                     provider.invoke("implement", "chosen", {}, Path.cwd())
                 execute.assert_not_called()
 
+    def test_data_only_route_rejects_vendor_alias_and_malformed_native_command(self):
+        base = {"output": "codex-data-only", "auth_mode": "codex-subscription",
+                "filesystem_scope": "codex-home-auth-only",
+                "attestation": {"mode": "provider-response-header"},
+                "argv": [sys.executable, "--model", "{model}"]}
+        variants = [
+            ("gemini", base),
+            ("codex", base | {"argv": None}),
+            ("codex", base | {"argv": [sys.executable, "--model", "{model}", "extra"]}),
+            ("codex", base | {"attestation": {"mode": "requested-only"}}),
+        ]
+        for vendor, config in variants:
+            with self.subTest(vendor=vendor, config=config), patch("project_creator.providers.execute") as execute:
+                with self.assertRaises(GateError):
+                    CLIProvider(vendor, config, audit=lambda *a: None).invoke(
+                        "implement", "chosen", {}, Path.cwd())
+                execute.assert_not_called()
+
     def test_provider_uses_the_same_environment_snapshot_it_validated(self):
         config = {"output": "codex-data-only", "auth_mode": "codex-subscription",
                   "filesystem_scope": "codex-home-auth-only",
@@ -140,7 +158,7 @@ class ProviderEdges(unittest.TestCase):
                 self.assertNotEqual(call.kwargs["cwd"], Path.cwd())
                 self.assertTrue(call.kwargs["cwd"].name.startswith("project-creator-provider-"))
                 self.assertFalse(call.kwargs["cwd"].exists())
-                self.assertTrue(call.kwargs["data_only_cwd"])
+                self.assertTrue(call.kwargs["system_cwd"])
             self.assertEqual(len(directories), 1)
 
     def test_data_only_codex_receives_bounded_packet_and_strict_stage_schema(self):
@@ -261,6 +279,7 @@ class ProviderEdges(unittest.TestCase):
             self.assertFalse("DOCKER_CONTEXT" in call.kwargs["env"])
             self.assertFalse("DOCKER_HOST" in call.kwargs["env"])
             self.assertTrue("project-creator-docker-client-" in call.kwargs["env"]["DOCKER_CONFIG"])
+            self.assertTrue(call.kwargs["system_cwd"])
 
     def test_only_data_worker_and_docker_receive_reviewed_runtime_inputs(self):
         proof = {"executable_sha256": "a" * 64,
@@ -283,7 +302,7 @@ class ProviderEdges(unittest.TestCase):
             CLIProvider("codex", config, audit=lambda *a: None).invoke(
                 "implement", "chosen", packet, Path.cwd())
             self.assertEqual(launch.call_args.kwargs["expected_runtime_sha256"], proof["runtime_files"])
-            self.assertTrue(launch.call_args.kwargs["data_only_cwd"])
+            self.assertTrue(launch.call_args.kwargs["system_cwd"])
 
         native = {"argv": [sys.executable], "proof": proof}
         with patch("project_creator.providers.validate_capability"), \

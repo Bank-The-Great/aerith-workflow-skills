@@ -107,3 +107,9 @@
   ordinary vendor CLIs until they have equivalent workers. Likewise reject the
   native verifier path: only the exact-packet Docker route binds tests to the
   controller's frozen source snapshot.
+- 2026-09-14: A reviewed executable's containing directory can still be extended
+  with a new dynamic dependency. Provider admission therefore requires one
+  standalone native executable with an empty runtime-file closure, and the fixed
+  Docker client runs away from the project under an explicit empty client config.
+  The only Python verification closure is compiled from its already validated
+  adapter, process and contract bytes with local imports injected explicitly.
