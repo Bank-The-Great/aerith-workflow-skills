@@ -8,7 +8,8 @@ from pathlib import Path
 
 from .contracts import GateError, digest, safe_text
 from .processes import execute, minimal_environment
-from .provenance import parse_codex_provenance, parse_gemini_provenance
+from .output_schemas import schema_for
+from .provenance import parse_codex_data_only, parse_codex_provenance, parse_gemini_provenance
 
 _HOST_CAPABILITIES = {}
 
@@ -164,7 +165,8 @@ class CLIProvider:
         self.name, self.config, self.audit, self.cancelled = name, config, audit, cancelled
 
     def invoke(self, stage: str, model: str, packet: dict, directory: Path) -> dict:
-        required_auth = {"codex-provenance": "codex-subscription", "gemini-provenance": "gemini-subscription"}
+        required_auth = {"codex-provenance": "codex-subscription", "codex-data-only": "codex-subscription",
+                         "gemini-provenance": "gemini-subscription"}
         if self.config.get("output") in required_auth and self.config.get("auth_mode") != required_auth[self.config["output"]]:
             raise GateError("isolated provenance adapters require subscription-only authentication")
         if self.config.get("output") == "claude-stream" and self.config.get("auth_mode") != "claude-subscription":
@@ -176,7 +178,16 @@ class CLIProvider:
         argv = [arg.replace("{model}", model) for arg in self.config["argv"]]
         if not any(model in arg for arg in argv):
             raise GateError("provider does not explicitly select the pinned model")
-        prompt = json.dumps(packet, ensure_ascii=False)
+        request_id = digest(packet)
+        worker_packet = packet
+        if self.config.get("output") == "codex-data-only":
+            worker_packet = {
+                "request_id": request_id,
+                "instructions": packet.get("instructions", ""),
+                "input": {key: value for key, value in packet.items() if key != "instructions"},
+                "output_schema": schema_for(stage),
+            }
+        prompt = json.dumps(worker_packet, ensure_ascii=False)
         safe_text(prompt)
         self.audit("provider_start", {"vendor": self.name, "model_requested": model, "stage": stage,
                    "packet_hash": digest(packet), "adapter_hash": digest(self.config), "cost_class": "ruby", "billing": "existing-cli-auth; exact marginal spend unknown"})
@@ -198,7 +209,10 @@ class CLIProvider:
             metadata = {}
             stream_parsers = {"claude-stream": parse_claude_stream, "codex-provenance": parse_codex_provenance,
                               "gemini-provenance": parse_gemini_provenance}
-            if mode in stream_parsers:
+            if mode == "codex-data-only":
+                response, metadata = parse_codex_data_only(result.stdout, model, request_id)
+                actual = metadata["model"]
+            elif mode in stream_parsers:
                 response, metadata = stream_parsers[mode](result.stdout, model)
                 actual = metadata["model"]
             else:
@@ -212,7 +226,7 @@ class CLIProvider:
                     response = json_object(envelope["result"])
             elif mode == "gemini-json":
                 response = json.loads(envelope["response"])
-            elif mode not in stream_parsers:
+            elif mode not in stream_parsers and mode != "codex-data-only":
                 response = envelope
             if not isinstance(response, dict):
                 raise ValueError()

@@ -97,3 +97,31 @@ def parse_codex_provenance(text, requested):
         "model": requested, "session_id": thread, "turn_id": turn,
         "response_ids": responses, "source": "provider-response.headers",
     }
+
+
+def parse_codex_data_only(text, requested, request_id):
+    """Read the two-record stream from the lifecycle-free Codex worker."""
+    events = [json.loads(line) for line in text.splitlines() if line.strip()]
+    if len(events) != 2 or not all(isinstance(event, dict) for event in events):
+        raise GateError("Codex data-only worker needs exactly two records")
+    metadata, result = events
+    if set(metadata) != {"type", "request_id", "response_id", "requested_model", "provider_model"}:
+        raise GateError("Codex data-only metadata is malformed")
+    if set(result) != set(metadata) | {"output"}:
+        raise GateError("Codex data-only result is malformed")
+    if metadata.get("type") != "response_metadata" or result.get("type") != "result":
+        raise GateError("Codex data-only record order is invalid")
+    for record in events:
+        if (record.get("request_id") != request_id or record.get("requested_model") != requested
+                or record.get("provider_model") != requested
+                or not identifier(record.get("response_id"))):
+            raise GateError("Codex data-only identity or model evidence differs from the request")
+    if metadata["response_id"] != result["response_id"] or not isinstance(result.get("output"), dict):
+        raise GateError("Codex data-only response identity or output is invalid")
+    return result["output"], {
+        "model": requested,
+        "request_id": request_id,
+        "response_ids": [result["response_id"]],
+        "source": "provider-response.headers",
+        "runtime": "aerith-data-only",
+    }

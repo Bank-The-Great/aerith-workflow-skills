@@ -66,6 +66,12 @@ verification. A standalone stage does not invoke preceding stages.
   model usage, no tools/MCP, and an error-free final JSON result. Subscription
   mode refuses non-subscription auth and excludes API-routing environment flags.
   This implementation is not itself a provider admission certificate.
+- The Codex data-only edge sends a bounded controller packet plus a strict
+  stage-specific JSON schema. It accepts exactly one metadata record and one
+  result record whose request, response, requested-model and provider-model
+  identities agree. The source-built worker remains a separately reviewed,
+  host-pinned executable; no ordinary Codex thread lifecycle is accepted by
+  this edge.
 - A private GitHub outbox with idempotent markers and read-back. Unknown creates
   are reconciled, never blindly repeated. The initial Issue body is immutable;
   subsequent revisions are idempotent comments to avoid overwriting user edits.
@@ -114,12 +120,13 @@ GitHub parent/subissue relationship integration and a live mirror test,
 real single-task pilot, and host admission/index
 activation. These are not inferred from passing unit tests.
 
-Observed host tests now include real Docker denial/descendant-cleanup probes,
+Observed host tests include real Docker denial/descendant-cleanup probes,
 the actual verification route catching a seeded wrong-record edit, and short
 Claude calls with two exact models in separate tool-less sessions. Those scoped
 observations do not establish a full live pipeline or cross-vendor readiness.
-Codex/Gemini adapter acceptance remains unresolved; a requested model selector
-must not be relabeled as observed response metadata to obtain a passing gate.
+Provider acceptance remains host-scoped: these strict Codex/Gemini parsers do
+not admit a runtime by themselves, and a requested model selector must not be
+relabeled as observed response metadata to obtain a passing gate.
 Dead-worker Docker-container sweeping at login remains an integration gate;
 the deterministic identity currently supports reconciliation before that test
 is run again, not an installed startup cleanup service.

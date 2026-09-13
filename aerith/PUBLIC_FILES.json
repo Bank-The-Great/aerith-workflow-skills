@@ -17,6 +17,7 @@
   "project_creator/engine.py",
   "project_creator/mirror.py",
   "project_creator/models.py",
+  "project_creator/output_schemas.py",
   "project_creator/processes.py",
   "project_creator/providers.py",
   "project_creator/provenance.py",

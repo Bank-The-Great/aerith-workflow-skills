@@ -57,3 +57,7 @@
   runtimes. Reject missing/mixed identities, stale attempts, effect-capable
   events and incomplete streams. Sixty behavioral tests pass. Neither parser
   grants runtime admission; both require host-pinned conformance evidence.
+- 2026-09-13: A lifecycle-free Codex worker needs a distinct wire contract,
+  not a filtered ordinary thread stream. The controller now sends strict
+  per-stage schemas and accepts exactly two identity-bound JSONL records;
+  executable containment and live subscription proof remain host-owned gates.

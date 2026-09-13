@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from project_creator.contracts import GateError
-from project_creator.provenance import parse_codex_provenance, parse_gemini_provenance
+from project_creator.provenance import parse_codex_data_only, parse_codex_provenance, parse_gemini_provenance
 
 
 def codex():
@@ -28,6 +28,13 @@ def gemini():
                        "tool_call_chunks": 0, "completed": True}]}}
 
 
+def codex_data_only():
+    common = {"request_id": "request-1", "response_id": "response-1",
+              "requested_model": "chosen", "provider_model": "chosen"}
+    return [{"type": "response_metadata", **common},
+            {"type": "result", **common, "output": {"ok": True}}]
+
+
 class ProvenanceTests(unittest.TestCase):
     def read_codex(self, events):
         return parse_codex_provenance("\n".join(json.dumps(e) for e in events), "chosen")
@@ -37,6 +44,32 @@ class ProvenanceTests(unittest.TestCase):
             self.assertEqual(result[0], {"ok": True})
             self.assertEqual(result[1]["model"], "chosen")
             self.assertEqual(result[1]["session_id"], "fresh")
+
+    def test_valid_data_only_codex(self):
+        output, metadata = parse_codex_data_only(
+            "\n".join(json.dumps(event) for event in codex_data_only()), "chosen", "request-1")
+        self.assertEqual(output, {"ok": True})
+        self.assertEqual(metadata["model"], "chosen")
+        self.assertEqual(metadata["response_ids"], ["response-1"])
+
+    def test_data_only_codex_fails_closed_on_mixed_or_incomplete_evidence(self):
+        cases = []
+        for index, field, value in (
+            (0, "provider_model", "other"), (1, "requested_model", "other"),
+            (1, "request_id", "other"), (1, "response_id", "other"),
+            (0, "response_id", "bad\nidentity"), (1, "output", []),
+        ):
+            events = copy.deepcopy(codex_data_only())
+            events[index][field] = value
+            cases.append(events)
+        extra = codex_data_only()
+        extra[0]["untrusted"] = True
+        cases.extend([extra, codex_data_only()[:1], list(reversed(codex_data_only())),
+                      [{"type": "error", "code": "provider_failure"}]])
+        for events in cases:
+            with self.subTest(events=events), self.assertRaises(GateError):
+                parse_codex_data_only("\n".join(json.dumps(event) for event in events),
+                                      "chosen", "request-1")
 
     def test_codex_rejects_requested_only_absent_mixed_overflow(self):
         for models in (None, [], [""], ["other"], ["chosen", "other"], "chosen", ["chosen", "chosen"]):

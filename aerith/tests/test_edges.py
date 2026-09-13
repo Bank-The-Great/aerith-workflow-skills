@@ -13,6 +13,7 @@ from project_creator.contracts import GateError, digest
 from project_creator.providers import parse_claude_stream, provider_environment, VerificationRunner, CLIProvider, validate_capability
 from project_creator.docker_sandbox import DockerSandbox
 from project_creator.processes import Result
+from project_creator.output_schemas import SCHEMAS
 
 
 def docker_config():
@@ -108,6 +109,50 @@ class ProviderEdges(unittest.TestCase):
             for call in execute.call_args_list:
                 self.assertIs(call.kwargs["env"], snapshots[0])
                 self.assertEqual(call.kwargs["env"].get("PATH"), original_path)
+
+    def test_data_only_codex_receives_bounded_packet_and_strict_stage_schema(self):
+        packet = {"instructions": "controller-only instructions", "role": "untrusted role data",
+                  "output_contract": {"changes": []}}
+        request_id = digest(packet)
+        common = {"request_id": request_id, "response_id": "response-1",
+                  "requested_model": "chosen", "provider_model": "chosen"}
+        stream = "\n".join(json.dumps(x) for x in (
+            {"type": "response_metadata", **common},
+            {"type": "result", **common,
+             "output": {"changes": [], "summary": "nothing", "questions": []}},
+        ))
+        config = {"output": "codex-data-only", "auth_mode": "codex-subscription",
+                  "attestation": {"mode": "provider-response-header"},
+                  "argv": [sys.executable, "--model", "{model}"]}
+        with patch("project_creator.providers.validate_capability"), \
+                patch("project_creator.providers.execute", return_value=Result(0, stream, "", 0.1)) as execute:
+            result = CLIProvider("codex", config, audit=lambda *a: None).invoke(
+                "implement", "chosen", packet, Path.cwd())
+        self.assertEqual(result["summary"], "nothing")
+        worker_request = json.loads(execute.call_args.kwargs["stdin"])
+        self.assertEqual(worker_request["request_id"], request_id)
+        self.assertEqual(worker_request["instructions"], packet["instructions"])
+        self.assertNotIn("instructions", worker_request["input"])
+        self.assertEqual(worker_request["input"]["role"], packet["role"])
+        self.assertEqual(worker_request["output_schema"], SCHEMAS["implement"])
+
+    def test_every_provider_schema_closes_all_object_shapes(self):
+        def visit(value):
+            if not isinstance(value, dict):
+                return
+            if value.get("type") == "object":
+                self.assertIs(value.get("additionalProperties"), False)
+                self.assertEqual(set(value.get("required", [])), set(value.get("properties", {})))
+            for child in value.values():
+                if isinstance(child, list):
+                    for item in child:
+                        visit(item)
+                else:
+                    visit(child)
+        self.assertEqual(set(SCHEMAS), {"grill-with-docs", "to-spec", "to-tickets",
+                                        "implement", "spec-review", "defect-review"})
+        for schema in SCHEMAS.values():
+            visit(schema)
 
     def test_exact_json_fence_only(self):
         self.assertEqual(self.parse(stream(result='```json\n{"ok":true}\n```'))[0], {"ok": True})

@@ -27,7 +27,7 @@ The controller, not you, decides whether a stage or project is complete.
 """
 
 CONTRACTS = {
-    "grill-with-docs": {"brief": {"summary": "...", "decisions": [{"id": "DEC-001", "decision": "...", "rationale": "..."}], "glossary": {}}, "questions": []},
+    "grill-with-docs": {"brief": {"summary": "...", "decisions": [{"id": "DEC-001", "decision": "...", "rationale": "..."}], "glossary": {"entries": [{"term": "...", "definition": "..."}]}}, "questions": []},
     "to-spec": {"spec": {"title": "...", "non_goals": [], "requirements": [{"id": "REQ-001", "text": "...", "acceptance": [{"id": "AC-001", "text": "...", "test_ids": ["approved-test-id"]}]}]}, "questions": []},
     "to-tickets": {"tickets": [{"id": "T-001", "title": "...", "criteria": ["AC-001"], "blocked_by": [], "write_set": ["approved/path.py"]}], "questions": []},
     "implement": {"changes": [{"path": "approved/path.py", "expected_sha256": "current UTF-8 file hash or null for new file", "content": "complete new UTF-8 file"}], "summary": "...", "questions": []},
