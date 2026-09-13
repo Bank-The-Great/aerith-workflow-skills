@@ -11,6 +11,7 @@ import signal
 import subprocess
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -170,6 +171,39 @@ def _locked_windows_reviewed_path(path: Path, expected_sha256: str):
         raise
 
 
+def _locked_windows_empty_directory(path: Path):
+    """Hold an empty directory and every mutable ancestor against retargeting."""
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                   ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                   wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    invalid = wintypes.HANDLE(-1).value
+    flags = 0x02000000 | 0x00200000  # BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+    handles = []
+    try:
+        parents = list(path.parents)
+        for directory in [*reversed(parents[:-1]), path]:
+            handle = kernel.CreateFileW(str(directory), 0x80000000, 0x00000001,
+                                        None, 3, flags, None)
+            if handle == invalid:
+                raise GateError("could not lock provider working directory")
+            handles.append(handle)
+            attributes = ctypes.windll.kernel32.GetFileAttributesW(str(directory))
+            if attributes == 0xFFFFFFFF or attributes & 0x400:
+                raise GateError("provider working directory contains a reparse point")
+        if any(path.iterdir()):
+            raise GateError("provider working directory is not empty at launch")
+        return _WindowsPathLock(handles, None)
+    except BaseException:
+        for handle in reversed(handles):
+            kernel.CloseHandle(handle)
+        raise
+
+
 def _reviewed_locks(executable_hash, runtime_hashes, argv):
     runtime_hashes = {} if runtime_hashes is None else runtime_hashes
     if not isinstance(runtime_hashes, dict) or not all(
@@ -183,16 +217,15 @@ def _reviewed_locks(executable_hash, runtime_hashes, argv):
         if name in reviewed and reviewed[name] != value:
             raise GateError("conflicting reviewed file hashes")
         reviewed[name] = value
+    if reviewed and os.name != "nt":
+        raise GateError("atomic reviewed runtime binding is unsupported on this host")
     locks = []
     try:
         for name, expected in reviewed.items():
             path = Path(name)
             if not path.is_absolute() or not _valid_sha256(expected) or not _reparse_free(path):
                 raise GateError("reviewed runtime path is not immutable")
-            if os.name == "nt":
-                locks.append(_locked_windows_reviewed_path(path, expected))
-            elif hashlib.sha256(path.read_bytes()).hexdigest() != expected:
-                raise GateError("reviewed runtime changed before launch")
+            locks.append(_locked_windows_reviewed_path(path, expected))
         return locks
     except BaseException:
         for lock in reversed(locks):
@@ -200,14 +233,41 @@ def _reviewed_locks(executable_hash, runtime_hashes, argv):
         raise
 
 
+@contextmanager
+def reviewed_files(expected_hashes):
+    """Hold an exact reviewed file set stable for an external consumer."""
+    locks = _reviewed_locks(None, expected_hashes, [""])
+    try:
+        yield
+    finally:
+        for lock in reversed(locks):
+            lock.close()
+
+
 def execute(argv: list[str], *, cwd: Path, stdin="", timeout=600, cancelled=lambda: False,
             max_bytes=2_000_000, env=None, expected_executable_sha256=None,
-            expected_runtime_sha256=None) -> Result:
+            expected_runtime_sha256=None, require_empty_cwd=False) -> Result:
     if not isinstance(argv, list) or not argv or not all(isinstance(x, str) and "\x00" not in x for x in argv):
         raise GateError("expected fixed argv")
     if Path(argv[0]).suffix.lower() in {".cmd", ".bat", ".ps1"}:
         raise GateError("resolve CLI to its native executable or node script; no shell wrapper")
     reviewed_locks = _reviewed_locks(expected_executable_sha256, expected_runtime_sha256, argv)
+    if require_empty_cwd:
+        working_directory = Path(cwd)
+        if not working_directory.is_absolute() or not _reparse_free(working_directory):
+            for lock in reversed(reviewed_locks):
+                lock.close()
+            raise GateError("provider working directory is not immutable")
+        if os.name != "nt":
+            for lock in reversed(reviewed_locks):
+                lock.close()
+            raise GateError("atomic empty provider working directory is unsupported on this host")
+        try:
+            reviewed_locks.append(_locked_windows_empty_directory(working_directory))
+        except BaseException:
+            for lock in reversed(reviewed_locks):
+                lock.close()
+            raise
     kwargs = {"cwd": str(cwd), "stdin": subprocess.PIPE, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "env": env}
     if os.name == "nt":
         kwargs["creationflags"] = 0x00000004 | 0x08000000  # SUSPENDED, NO_WINDOW

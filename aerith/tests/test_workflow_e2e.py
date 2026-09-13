@@ -88,7 +88,7 @@ class Scenario:
 
 
 class Verifier:
-    def run(self, ids, root):
+    def run(self, ids, root, *, expected_files=None):
         results = []
         for test_id in sorted(set(ids)):
             passed = (root / "calc.py").read_text(encoding="utf-8") == "def increment(x):\n    return x + 1\n"

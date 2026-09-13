@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import types
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -155,9 +156,31 @@ def validate_capability(config: dict, purpose: str, *, environment=None):
     for arg in config["argv"][1:]:
         if Path(arg).suffix.lower() in {".py", ".js", ".mjs", ".cjs", ".exe"} and arg not in dependencies:
             raise GateError(f"{purpose} script or binary missing from proof")
+    runtime_bytes = {}
     for name, expected_hash in dependencies.items():
-        if not Path(name).is_absolute() or digest(Path(name).read_bytes()) != expected_hash:
+        if not Path(name).is_absolute():
             raise GateError(f"{purpose} runtime dependency changed after proof")
+        raw = Path(name).read_bytes()
+        if digest(raw) != expected_hash:
+            raise GateError(f"{purpose} runtime dependency changed after proof")
+        runtime_bytes[name] = raw
+    return runtime_bytes
+
+
+def _verified_docker_class(runtime_bytes):
+    """Compile the exact Docker adapter bytes validated in this invocation."""
+    path = Path(__file__).resolve().with_name("docker_sandbox.py")
+    raw = runtime_bytes.get(str(path)) if isinstance(runtime_bytes, dict) else None
+    if not isinstance(raw, bytes):
+        raise GateError("validated Docker runtime bytes are unavailable")
+    module = types.ModuleType("project_creator._validated_docker_sandbox")
+    module.__file__ = str(path)
+    module.__package__ = "project_creator"
+    exec(compile(raw, str(path), "exec"), module.__dict__)
+    cls = module.__dict__.get("DockerSandbox")
+    if not isinstance(cls, type):
+        raise GateError("validated Docker runtime has no sandbox class")
+    return cls
 
 
 def attest_model(envelope: dict, policy: dict, requested: str):
@@ -216,7 +239,8 @@ class CLIProvider:
                 auth = execute([argv[0], "auth", "status", "--json"], cwd=auth_cwd, timeout=20, env=env,
                                cancelled=self.cancelled,
                                expected_executable_sha256=self.config.get("proof", {}).get("executable_sha256"),
-                               expected_runtime_sha256=self.config.get("proof", {}).get("runtime_files", {}))
+                               expected_runtime_sha256=self.config.get("proof", {}).get("runtime_files", {}),
+                               require_empty_cwd=True)
                 try:
                     status = json.loads(auth.stdout)
                 except ValueError as exc:
@@ -232,7 +256,8 @@ class CLIProvider:
             result = execute(argv, cwd=inference_cwd, stdin=prompt, timeout=self.config.get("timeout_seconds", 900),
                              cancelled=self.cancelled, env=env,
                              expected_executable_sha256=self.config.get("proof", {}).get("executable_sha256"),
-                             expected_runtime_sha256=self.config.get("proof", {}).get("runtime_files", {}))
+                             expected_runtime_sha256=self.config.get("proof", {}).get("runtime_files", {}),
+                             require_empty_cwd=True)
         if result.returncode:
             self.audit("provider_failure", {"vendor": self.name, "exit_code": result.returncode})
             raise GateError("provider refused or failed; inspect authentication/model availability outside the AI transcript")
@@ -277,8 +302,8 @@ class VerificationRunner:
         self.sandbox, self.commands, self.cancelled = sandbox, commands, cancelled
         self.read_set = read_set
 
-    def run(self, ids: list[str], worktree: Path) -> list[dict]:
-        validate_capability(self.sandbox, "verification")
+    def run(self, ids: list[str], worktree: Path, *, expected_files=None) -> list[dict]:
+        runtime_bytes = validate_capability(self.sandbox, "verification")
         results = []
         for test_id in sorted(set(ids)):
             if test_id not in self.commands:
@@ -287,10 +312,11 @@ class VerificationRunner:
             if not isinstance(command, list) or not command:
                 raise GateError("invalid approved verification command")
             if self.sandbox.get("kind") == "docker":
-                from .docker_sandbox import DockerSandbox
                 if not self.read_set:
                     raise GateError("Docker verification requires an exact source packet")
-                result = DockerSandbox(self.sandbox, self.read_set, cancelled=self.cancelled).run(command, worktree, test_id)
+                DockerSandbox = _verified_docker_class(runtime_bytes)
+                result = DockerSandbox(self.sandbox, self.read_set, cancelled=self.cancelled).run(
+                    command, worktree, test_id, expected_files=expected_files)
             else:
                 argv = [x.replace("{worktree}", str(worktree)) for x in self.sandbox["argv"]] + command
                 result = execute(

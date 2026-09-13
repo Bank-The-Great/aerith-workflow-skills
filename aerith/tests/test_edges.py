@@ -10,7 +10,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from project_creator.contracts import GateError, digest
-from project_creator.providers import parse_claude_stream, provider_environment, VerificationRunner, CLIProvider, validate_capability
+from project_creator.providers import (parse_claude_stream, provider_environment, VerificationRunner,
+                                       CLIProvider, validate_capability, _verified_docker_class)
 from project_creator.docker_sandbox import DockerSandbox
 from project_creator.processes import Result
 from project_creator.output_schemas import SCHEMAS, validate_output
@@ -274,6 +275,7 @@ class ProviderEdges(unittest.TestCase):
             CLIProvider("codex", config, audit=lambda *a: None).invoke(
                 "implement", "chosen", packet, Path.cwd())
             self.assertEqual(launch.call_args.kwargs["expected_runtime_sha256"], proof["runtime_files"])
+            self.assertTrue(launch.call_args.kwargs["require_empty_cwd"])
 
         native = {"argv": [sys.executable], "proof": proof}
         with patch("project_creator.providers.validate_capability"), \
@@ -298,11 +300,15 @@ class ProviderEdges(unittest.TestCase):
                 seen.append(args)
                 return Result(0, "c" * 64 if args[0] == "create" else "", "", 0)
             with patch.object(runner, "remove_owned"), patch.object(runner, "command", side_effect=call), patch.object(runner, "verify_container") as inspect:
-                runner.run(["python", "source.py"], root, "unit")
+                runner.run(["python", "source.py"], root, "unit",
+                           expected_files={"source.py": digest((root / "source.py").read_bytes())})
                 create = next(x for x in seen if x[0] == "create")
                 self.assertIn("--pull=never", create)
                 self.assertIn("--no-healthcheck", create)
                 self.assertEqual(create[create.index("--log-driver") + 1], "none")
+                mounts = [create[index + 1] for index, value in enumerate(create) if value == "--mount"]
+                self.assertEqual(len(mounts), 1)
+                self.assertIn("target=/workspace/source.py,readonly", mounts[0])
                 i = create.index("--entrypoint")
                 self.assertEqual(create[i+1:], ["python", docker_config()["image"], "source.py"])
                 self.assertEqual(seen[-1][:2], ["start", "--attach"])
@@ -321,22 +327,23 @@ class ProviderEdges(unittest.TestCase):
         runner = DockerSandbox(docker_config(), ["source.py"])
         root = Path.cwd()
         identity = "c" * 64
+        source = root / "source.py"
         value = {"Id": identity, "State": {"Running": False},
-                 "Mounts": [{"Type": "bind", "Source": str(root), "Destination": "/workspace", "RW": False}],
+                 "Mounts": [{"Type": "bind", "Source": str(source), "Destination": "/workspace/source.py", "RW": False}],
                  "HostConfig": {"ReadonlyRootfs": True, "NetworkMode": "none", "Privileged": False, "CapDrop": ["ALL"],
                                 "SecurityOpt": ["no-new-privileges:true"], "Memory": 512*1024*1024, "NanoCpus": 1_000_000_000,
                                 "PidsLimit": 128, "Tmpfs": {"/tmp": "rw,noexec,nosuid,size=64m"}, "LogConfig": {"Type": "none", "Config": {}}},
                  "Config": {"User": "65534:65534", "Healthcheck": {"Test": ["NONE"]}, "Entrypoint": ["python"],
                             "Cmd": ["source.py"], "WorkingDir": "/workspace", "Image": docker_config()["image"]}}
         with patch.object(runner, "command", return_value=Result(0, json.dumps(value), "", 0)):
-            runner.verify_container(identity, root, ["python", "source.py"], root)
+            runner.verify_container(identity, {"source.py": source}, ["python", "source.py"], root)
         value["HostConfig"]["LogConfig"]["Type"] = "syslog"
         with patch.object(runner, "command", return_value=Result(0, json.dumps(value), "", 0)), self.assertRaisesRegex(GateError, "daemon_logging"):
-            runner.verify_container(identity, root, ["python", "source.py"], root)
+            runner.verify_container(identity, {"source.py": source}, ["python", "source.py"], root)
         value["HostConfig"]["LogConfig"]["Type"] = "none"
         value["Config"]["Healthcheck"]["Test"] = ["CMD", "unapproved"]
         with patch.object(runner, "command", return_value=Result(0, json.dumps(value), "", 0)), self.assertRaisesRegex(GateError, "healthcheck"):
-            runner.verify_container(identity, root, ["python", "source.py"], root)
+            runner.verify_container(identity, {"source.py": source}, ["python", "source.py"], root)
 
     def test_docker_proof_requires_controller_runtime(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -398,11 +405,24 @@ class ProviderEdges(unittest.TestCase):
     def test_docker_route_preserves_fixed_test_argv(self):
         from project_creator.processes import Result
         cfg = {"kind": "docker"}
-        with patch("project_creator.providers.validate_capability"), patch("project_creator.docker_sandbox.DockerSandbox") as sandbox:
+        with patch("project_creator.providers.validate_capability", return_value={}), \
+                patch("project_creator.providers._verified_docker_class") as loader:
+            sandbox = loader.return_value
             sandbox.return_value.run.return_value = Result(0, "verified", "", 0.1)
-            result = VerificationRunner(cfg, {"unit": ["python", "tests.py"]}, read_set=["source.py"]).run(["unit"], Path.cwd())
-            sandbox.return_value.run.assert_called_once_with(["python", "tests.py"], Path.cwd(), "unit")
+            expected = {"source.py": "a" * 64}
+            result = VerificationRunner(cfg, {"unit": ["python", "tests.py"]}, read_set=["source.py"]).run(
+                ["unit"], Path.cwd(), expected_files=expected)
+            sandbox.return_value.run.assert_called_once_with(
+                ["python", "tests.py"], Path.cwd(), "unit", expected_files=expected)
             self.assertEqual(result[0]["exit_code"], 0)
+
+    def test_docker_class_executes_the_already_validated_runtime_bytes(self):
+        runtime = Path(__file__).resolve().parents[1] / "project_creator" / "docker_sandbox.py"
+        raw = runtime.read_bytes()
+        with patch.object(Path, "read_bytes", side_effect=AssertionError("disk reopened")):
+            cls = _verified_docker_class({str(runtime): raw})
+        self.assertEqual(cls.__name__, "DockerSandbox")
+        self.assertEqual(cls.__module__, "project_creator._validated_docker_sandbox")
 
 
 if __name__ == "__main__":

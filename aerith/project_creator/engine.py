@@ -388,7 +388,9 @@ class Engine:
             self.checkpoint(run, "edits_applied")
         audit_scope(root, run["base"], allowed)
         frozen = snapshot(root, read_set)
-        tests = self.verifier_factory(run).run([test for cid in scope for test in acs[cid]["test_ids"]], root)
+        tests = self.verifier_factory(run).run(
+            [test for cid in scope for test in acs[cid]["test_ids"]], root,
+            expected_files=frozen["file_sha256"])
         if {x["test_id"] for x in tests} != {test for cid in scope for test in acs[cid]["test_ids"]}:
             raise GateError("verification runner omitted required tests")
         if snapshot(root, read_set)["hash"] != frozen["hash"]:

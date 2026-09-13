@@ -21,7 +21,7 @@ from project_creator.store import Store, exclusive
 from project_creator.workspace import git, propose_edits, reconcile_edits, snapshot, project_lock
 from project_creator.providers import attest_model, validate_capability
 from project_creator.admission import verify_package, CORE_SKILLS, admission_stopped
-from project_creator.processes import execute
+from project_creator.processes import execute, reviewed_files
 from project_creator.mirror import sync, marker
 from project_creator.cli import main
 
@@ -58,7 +58,7 @@ class FixtureProvider:
 
 
 class FixtureVerifier:
-    def run(self, ids, root):
+    def run(self, ids, root, *, expected_files=None):
         # Fixed trusted fixture test, not a sandbox claim or model-generated test.
         result = execute([sys.executable, "-I", "-c", "from pathlib import Path; assert Path('calc.py').read_text() == 'def increment(x):\\n    return x + 1\\n'"], cwd=root)
         return [{"test_id": x, "exit_code": result.returncode, "evidence": "trusted-fixture-only"} for x in set(ids)]
@@ -358,6 +358,26 @@ class Contracts(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0)
             self.assertEqual(result.stdout.strip(), "reviewed")
+
+    def test_provider_launch_locks_empty_working_directory_namespace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "empty-provider-cwd"
+            root.mkdir()
+            result = execute([sys.executable, "-c", "print('isolated')"], cwd=root,
+                             require_empty_cwd=True)
+            self.assertEqual(result.stdout.strip(), "isolated")
+
+    @unittest.skipUnless(os.name == "nt", "Windows file-share lock contract")
+    def test_reviewed_source_file_cannot_change_while_external_consumer_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.py"
+            source.write_text("reviewed\n", encoding="utf-8")
+            with reviewed_files({str(source): digest(source.read_bytes())}):
+                with self.assertRaises(PermissionError):
+                    source.write_text("replacement\n", encoding="utf-8")
+                with self.assertRaises(PermissionError):
+                    source.rename(source.with_name("replacement.py"))
+            self.assertEqual(source.read_text(encoding="utf-8"), "reviewed\n")
 
     def test_output_byte_bound_and_shell_refusal(self):
         with tempfile.TemporaryDirectory() as tmp:

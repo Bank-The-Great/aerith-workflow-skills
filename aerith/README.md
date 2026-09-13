@@ -55,8 +55,15 @@ verification. A standalone stage does not invoke preceding stages.
   this candidate does not yet offer a budget-reset command.
 - Process cancellation before launch, Windows Job ownership before resume,
   POSIX process-group cleanup, bounded output and deadlines.
-- An optional digest-pinned Docker verifier mounts only a copied exact source
-  packet read-only, without network, host home, Git metadata or Docker socket.
+- Atomic reviewed executable/source hash-to-use binding is enabled on Windows;
+  admitted provider and verifier adapters fail closed on other hosts until an
+  equivalent native namespace-binding backend is implemented and proved.
+- An optional digest-pinned Docker verifier mounts each exact reviewed source
+  file separately and read-only, without its containing worktree, network,
+  host home, Git metadata or Docker socket. Source files and their Windows path
+  namespaces remain locked through container cleanup. The sandbox class runs
+  from the exact source bytes returned by capability validation, rather than a
+  later import from a replaceable disk path.
   It runs non-root with capability, memory, CPU and process limits; normal
   cancellation removes its specifically owned container. The explicit
   `probe_docker.py` tests real containment and descendant cleanup using canaries.

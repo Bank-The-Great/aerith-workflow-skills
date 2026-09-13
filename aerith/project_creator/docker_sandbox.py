@@ -1,6 +1,6 @@
-"""Networkless, non-root verification over a copied exact source set.
+"""Networkless, non-root verification over individually locked source files.
 
-Only a temporary source packet is mounted, read-only. Neither the Git metadata,
+Only exact reviewed files are mounted, read-only. Neither the Git metadata,
 private run state, host home, Docker socket nor host environment is exposed.
 Container identity is deterministic so recovery can reconcile a dead client's
 container before rerunning a side-effect-free verification step.
@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 
 from .contracts import GateError, digest, scoped_path
-from .processes import execute, minimal_environment
+from .processes import execute, minimal_environment, reviewed_files
 
 
 class DockerSandbox:
@@ -51,25 +51,37 @@ class DockerSandbox:
         if result.returncode or result.stdout.strip() != json.dumps(self.config["daemon_id"]) + ' "linux"':
             raise GateError("Docker daemon identity changed or is unavailable")
 
-    def verify_container(self, name, source, command, cwd):
+    @staticmethod
+    def _host_source_candidates(source):
+        expected = str(source.resolve()).replace("\\", "/")
+        candidates = {expected}
+        if re.match(r"^[A-Za-z]:/", expected):
+            drive_path = expected[0].lower() + expected[2:]
+            candidates |= {"/run/desktop/mnt/host/" + drive_path, "/host_mnt/" + drive_path}
+        return {value.casefold() for value in candidates}
+
+    def verify_container(self, name, sources, command, cwd):
         result = self.command(["inspect", "--format", "{{json .}}", name], cwd)
         if result.returncode:
             raise GateError("created test container cannot be inspected")
         value = json.loads(result.stdout)
         host, cfg = value.get("HostConfig", {}), value.get("Config", {})
         mounts = value.get("Mounts", [])
-        expected = str(source.resolve()).replace("\\", "/")
-        candidates = {expected}
-        if re.match(r"^[A-Za-z]:/", expected):
-            drive_path = expected[0].lower() + expected[2:]
-            candidates |= {"/run/desktop/mnt/host/" + drive_path, "/host_mnt/" + drive_path}
         bind = [x for x in mounts if x.get("Type") == "bind"]
         others = [x for x in mounts if x.get("Type") != "bind"]
+        realized = {(x.get("Destination"), x.get("Source", "").replace("\\", "/").casefold()): x
+                    for x in bind}
+        expected_mounts = {("/workspace/" + relative,
+                            frozenset(self._host_source_candidates(source)))
+                           for relative, source in sources.items()}
+        mount_set_exact = len(bind) == len(expected_mounts) and not others
+        for destination, candidates in expected_mounts:
+            matches = [entry for (actual_destination, actual_source), entry in realized.items()
+                       if actual_destination == destination and actual_source in candidates]
+            mount_set_exact = mount_set_exact and len(matches) == 1 and matches[0].get("RW") is False
         checks = {
             "container_identity": value.get("Id") == name and value.get("State", {}).get("Running") is False,
-            "mount_set_exact": len(bind) == 1 and not others and bind[0].get("Destination") == "/workspace"
-                and bind[0].get("Source", "").replace("\\", "/").casefold() in {x.casefold() for x in candidates}
-                and bind[0].get("RW") is False,
+            "mount_set_exact": mount_set_exact,
             "root_read_only": host.get("ReadonlyRootfs") is True,
             "network_none": host.get("NetworkMode") == "none",
             "non_root": cfg.get("User") == "65534:65534",
@@ -115,7 +127,7 @@ class DockerSandbox:
         if removed.returncode:
             raise GateError("owned container cleanup failed; recovery required")
 
-    def run(self, command, worktree, test_id):
+    def run(self, command, worktree, test_id, *, expected_files=None):
         if self.cancelled():
             raise GateError("cancelled before container launch")
         if not isinstance(command, list) or not command or not command[0] or not all(isinstance(x, str) and "\x00" not in x for x in command):
@@ -125,17 +137,29 @@ class DockerSandbox:
         image = self.command(["image", "inspect", "--format", "{{json .RepoDigests}}", self.image], worktree)
         if image.returncode:
             raise GateError("pinned verification image is not local; automatic pull forbidden")
-        with tempfile.TemporaryDirectory(prefix="project-creator-packet-") as temporary:
-            source = Path(temporary)
-            for relative in self.read_set:
-                original = scoped_path(worktree, relative, self.read_set)
-                if original.exists():
-                    if not original.is_file() or original.stat().st_size > 500_000:
-                        raise GateError("verification input is not bounded regular text")
-                    target = source / relative
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(original.read_bytes())
-                    target.chmod(0o644)
+        sources = {}
+        hashes = {}
+        if expected_files is not None and (not isinstance(expected_files, dict)
+                or set(expected_files) != set(self.read_set)):
+            raise GateError("verification source hashes do not match the exact read set")
+        for relative in sorted(set(self.read_set)):
+            original = scoped_path(worktree, relative, self.read_set)
+            expected = expected_files.get(relative) if expected_files is not None else None
+            if original.exists():
+                if not original.is_file() or original.stat().st_size > 500_000:
+                    raise GateError("verification input is not bounded regular text")
+                observed = digest(original.read_bytes())
+                if expected_files is not None and observed != expected:
+                    raise GateError("verification source changed after controller snapshot")
+                if "," in str(original) or "," in relative:
+                    raise GateError("source path cannot be represented safely")
+                sources[relative] = original
+                hashes[str(original)] = observed
+            elif expected_files is not None and expected is not None:
+                raise GateError("verification source disappeared after controller snapshot")
+        if not sources:
+            raise GateError("verification requires at least one present source file")
+        with reviewed_files(hashes):
             args = ["create", "--pull=never", "--rm", "--name", name,
                     "--label", "project-creator.owner=" + owner,
                     "--network", "none", "--read-only", "--cap-drop", "ALL",
@@ -143,12 +167,12 @@ class DockerSandbox:
                     "--no-healthcheck", "--log-driver", "none",
                     "--memory", "512m", "--cpus", "1", "--user", "65534:65534",
                     "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "--workdir", "/workspace",
-                    "--mount", "type=bind,source=" + str(source) + ",target=/workspace,readonly",
                     "--env", "PYTHONDONTWRITEBYTECODE=1", "--env", "PYTHONUNBUFFERED=1",
-                    "--entrypoint", command[0], self.image, *command[1:]]
-            # Source paths are host-owned; commas are Docker mount separators.
-            if "," in str(source):
-                raise GateError("temporary source path cannot be represented safely")
+            ]
+            for relative, source in sources.items():
+                args.extend(["--mount", "type=bind,source=" + str(source)
+                             + ",target=/workspace/" + relative + ",readonly"])
+            args.extend(["--entrypoint", command[0], self.image, *command[1:]])
             container_id = name
             try:
                 created = self.command(args, worktree, timeout=30, cancelled=self.cancelled)
@@ -157,7 +181,7 @@ class DockerSandbox:
                 if not re.fullmatch(r"[a-f0-9]{64}", created.stdout.strip()):
                     raise GateError("test container omitted its immutable identity")
                 container_id = created.stdout.strip()
-                self.verify_container(container_id, source, command, worktree)
+                self.verify_container(container_id, sources, command, worktree)
                 return self.command(["start", "--attach", container_id], worktree,
                                     timeout=self.config.get("timeout_seconds", 600), cancelled=self.cancelled)
             finally:

@@ -105,7 +105,7 @@ print(json.dumps(out))
                    "daemon_inspection": runner.last_inspection,
                    "daemon_id": daemon_id, "container_id": runner.last_container_id,
                    "mounts_sha256": runner.last_mounts_hash, "source_packet_sha256": digest(program),
-                   "host_exclusion_basis": "exact read-only source mount, no other bind/volume, read-only root, isolated network; host canary is never mounted",
+                   "host_exclusion_basis": "exact individually locked read-only file mounts, no containing worktree/other bind/volume, read-only root, isolated network; host canary is never mounted",
                    "test_kind": "real Docker process, synthetic data, no model"}
         evidence.mkdir(parents=True, exist_ok=True)
         raw = json.dumps(payload, indent=2) + "\n"

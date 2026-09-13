@@ -82,3 +82,8 @@
   auth-status process shares it and leaves a local instruction/config file.
   Give auth and inference different newly created empty directories, and test
   the boundary by deliberately polluting the auth directory.
+- 2026-09-14: A hash followed by a later import or directory mount is still a
+  hash-to-use race. Execute the Docker sandbox class from the already validated
+  source bytes. Bind source as individually mounted, read-only files and hold
+  every source file plus its namespace until container cleanup; never mount a
+  same-user-writable packet directory whose tests can be replaced or augmented.
