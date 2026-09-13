@@ -428,7 +428,7 @@ class ProviderEdges(unittest.TestCase):
                    "filesystem_scope": "codex-home-auth-only",
                    "loader_policy": "pe-dependent-load-system32"}
             current = datetime.now(timezone.utc).isoformat()
-            cases = ("fresh_context", "tools_disabled", "ambient_disabled", "child_cleanup",
+            cases = ("fresh_context", "tools_disabled", "ambient_not_observed_in_output", "child_cleanup",
                      "model_attestation", "subscription_auth_only",
                      "dependent_load_flags_system32", "delay_imports_absent",
                      "imports_allowlisted")

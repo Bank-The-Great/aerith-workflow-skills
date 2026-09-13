@@ -120,7 +120,7 @@ def validate_capability(config: dict, purpose: str, *, environment=None):
         raise GateError(f"{purpose} containment proof expired or absent") from exc
     required = ({"exact_source_set", "outside_read_denied", "outside_write_denied",
                  "network_denied", "child_cleanup"} if purpose == "verification" else
-                {"fresh_context", "tools_disabled", "ambient_disabled", "child_cleanup",
+                {"fresh_context", "tools_disabled", "ambient_not_observed_in_output", "child_cleanup",
                  "model_attestation", "subscription_auth_only",
                  "dependent_load_flags_system32", "delay_imports_absent",
                  "imports_allowlisted"})

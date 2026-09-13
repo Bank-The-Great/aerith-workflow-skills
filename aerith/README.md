@@ -94,6 +94,9 @@ verification. A standalone stage does not invoke preceding stages.
   other vendors require equivalent workers before activation. Native/non-Docker
   verification is likewise rejected because it cannot enforce the frozen source
   packet.
+  The retained ambient canary case proves only that ambient content was not
+  observed in provider output; the stronger read boundary comes from reviewed
+  worker code plus the locked trusted non-project OS working directory.
 - The Codex data-only edge sends a bounded controller packet plus a strict
   stage-specific JSON schema. It accepts exactly one metadata record and one
   result record whose request, response, requested-model and provider-model
