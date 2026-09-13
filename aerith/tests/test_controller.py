@@ -123,6 +123,18 @@ class Harness(unittest.TestCase):
         self.assertEqual(result["last_error"], "provider adapter not configured")
         self.assertEqual(result["vendor"], "codex")
 
+    def test_cached_response_requires_unchanged_durable_receipt(self):
+        run = self.create()
+        packet = self.engine.packet(run, "grill-with-docs")
+        first = self.engine.invoke(run, "grill-with-docs", packet)
+        self.assertEqual(self.engine.invoke(run, "grill-with-docs", packet), first)
+        self.assertEqual(len(self.log), 1)
+        path = next((self.store.root / run["id"] / "calls").glob("*/response.json"))
+        path.write_text('{"brief":{"summary":"altered"}}', encoding="utf-8")
+        with self.assertRaisesRegex(GateError, "cached response"):
+            self.engine.invoke(run, "grill-with-docs", packet)
+        self.assertEqual(len(self.log), 1)
+
     def test_changed_spec_refuses(self):
         run = self.create()
         self.engine.run(run["id"], max_steps=2)
@@ -357,7 +369,7 @@ class Contracts(unittest.TestCase):
         cfg = {"argv": [sys.executable]}
         cfg["proof"] = {"configuration_hash": digest(cfg), "checked_at": datetime.now(timezone.utc).isoformat(),
                         "cases": {k: True for k in ("outside_read_denied", "outside_write_denied", "network_denied", "child_cleanup")}}
-        with self.assertRaisesRegex(GateError, "cases incomplete"):
+        with self.assertRaisesRegex(GateError, "trusted host"):
             validate_capability(cfg, "verification")
 
     def test_unconfigured_doctor_cannot_report_ready(self):

@@ -51,6 +51,17 @@ verification. A standalone stage does not invoke preceding stages.
   this candidate does not yet offer a budget-reset command.
 - Process cancellation before launch, Windows Job ownership before resume,
   POSIX process-group cleanup, bounded output and deadlines.
+- An optional digest-pinned Docker verifier mounts only a copied exact source
+  packet read-only, without network, host home, Git metadata or Docker socket.
+  It runs non-root with capability, memory, CPU and process limits; normal
+  cancellation removes its specifically owned container. The explicit
+  `probe_docker.py` tests real containment and descendant cleanup using canaries.
+  Image health checks and daemon log forwarding are disabled and inspected;
+  start and cleanup use the immutable created container ID.
+- Claude stream parsing checks init metadata, actual assistant-message model,
+  model usage, no tools/MCP, and an error-free final JSON result. Subscription
+  mode refuses non-subscription auth and excludes API-routing environment flags.
+  This implementation is not itself a provider admission certificate.
 - A private GitHub outbox with idempotent markers and read-back. Unknown creates
   are reconciled, never blindly repeated. The initial Issue body is immutable;
   subsequent revisions are idempotent comments to avoid overwriting user edits.
@@ -58,6 +69,11 @@ verification. A standalone stage does not invoke preceding stages.
 - Hash-bound package admission with expiry, per-skill revocation, and invocation
   audit. Model and sandbox adapters require retained negative-test evidence.
   Requested models must be independently attested in provider output.
+- Capability checks require a separate host-bootstrap allowlist of complete
+  reviewed adapter/proof hashes. Caller-created checksums and booleans cannot
+  grant authority. Versioned evidence must substantiate the claimed cases.
+  The trusted operator-owned host policy is outside every worker's write scope;
+  this is not a defense against a malicious owner replacing their own policy.
 
 ## Host-owned inputs
 
@@ -66,6 +82,8 @@ A run configuration supplies exact `read_set`, `write_set`, approved `tests`
 verified `verification_sandbox`. Optional `input_artifacts` support standalone
 later stages; optional `github` contains a private repository and native CLI
 path, never a token. Do not place these host configuration files in this fork.
+An explicit containment probe produces evidence only. It never registers a
+capability in the trusted host policy or admits a skill automatically.
 
 The model catalog uses `project_creator.vendors.<vendor>` with highest,
 second-highest, verified_at, source, and trusted family-discovery expressions.
@@ -83,10 +101,20 @@ proof of live vendor portability or an OS sandbox. No config flag named
 
 Still required before release: live Claude/Codex/Gemini conformance, actual
 account model availability/attestation, automatic new-run discovery, sandbox
-negative probes, native background scheduler registration and login recovery,
+proof admission, native background scheduler registration and login recovery,
 GitHub parent/subissue relationship integration and a live mirror test,
 canonical per-ticket files, real single-task pilot, and host admission/index
 activation. These are not inferred from passing unit tests.
+
+Observed host tests now include real Docker denial/descendant-cleanup probes,
+the actual verification route catching a seeded wrong-record edit, and short
+Claude calls with two exact models in separate tool-less sessions. Those scoped
+observations do not establish a full live pipeline or cross-vendor readiness.
+Codex/Gemini adapter acceptance remains unresolved; a requested model selector
+must not be relabeled as observed response metadata to obtain a passing gate.
+Dead-worker Docker-container sweeping at login remains an integration gate;
+the deterministic identity currently supports reconciliation before that test
+is run again, not an installed startup cleanup service.
 
 Build a deterministic manifest with `python aerith/build_release.py`. Only
 explicit `PUBLIC_FILES.json` entries can be packaged. An optional `--export`

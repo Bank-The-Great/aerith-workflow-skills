@@ -24,6 +24,14 @@ class Result:
     elapsed: float
 
 
+def minimal_environment():
+    """No preload/config/proxy/credential injection; normal native auth home only."""
+    allowed = {"SYSTEMROOT", "WINDIR", "COMSPEC", "PATH", "PATHEXT", "TEMP", "TMP", "TMPDIR",
+               "USERPROFILE", "HOME", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "PROGRAMFILES",
+               "PROGRAMFILES(X86)", "PROGRAMW6432", "USERNAME", "USER", "LOGNAME", "LANG", "LC_ALL"}
+    return {key: value for key, value in os.environ.items() if key.upper() in allowed}
+
+
 def _windows_job(proc, cancelled=lambda: False):
     """Assign a suspended child before it can spawn descendants, then resume."""
     import ctypes

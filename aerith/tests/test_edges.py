@@ -1,0 +1,241 @@
+"""Parser/adapter unit fixtures, not substitutes for live containment probes."""
+import json
+import os
+import sys
+import tempfile
+import unittest
+from datetime import datetime, timezone
+from pathlib import Path
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from project_creator.contracts import GateError, digest
+from project_creator.providers import parse_claude_stream, provider_environment, VerificationRunner, CLIProvider, validate_capability
+from project_creator.docker_sandbox import DockerSandbox
+from project_creator.processes import Result
+
+
+def docker_config():
+    return {"argv": [sys.executable], "image": "python@sha256:" + "a" * 64,
+            "daemon_host": "npipe:////./pipe/fixture", "daemon_id": "fixture"}
+
+
+def stream(*, model="chosen", tools=None, usage=None, result='{"ok":true}'):
+    return [
+        {"type": "system", "subtype": "init", "model": "chosen", "tools": tools or [], "mcp_servers": [], "session_id": "fresh"},
+        {"type": "assistant", "session_id": "fresh", "message": {"model": model, "content": [{"type": "text", "text": result}]}},
+        {"type": "result", "session_id": "fresh", "is_error": False, "modelUsage": usage or {"chosen": {}}, "result": result},
+    ]
+
+
+class ProviderEdges(unittest.TestCase):
+    def parse(self, events):
+        return parse_claude_stream("\n".join(json.dumps(x) for x in events), "chosen")
+
+    def test_stream_requires_observed_message_model(self):
+        response, metadata = self.parse(stream())
+        self.assertEqual(response, {"ok": True})
+        self.assertEqual(metadata["session_id"], "fresh")
+        with self.assertRaises(GateError):
+            self.parse(stream(model="fallback"))
+
+    def test_tools_and_mixed_models_refused(self):
+        for data in (stream(tools=["Read"]), stream(usage={"chosen": {}, "helper": {}})):
+            with self.assertRaises(GateError):
+                self.parse(data)
+        events = stream()
+        events[1]["message"]["content"] = [{"type": "tool_use", "name": "Read"}]
+        with self.assertRaises(GateError):
+            self.parse(events)
+        for kind in ("server_tool_use", "unknown", "tool_result"):
+            events = stream()
+            events[1]["message"]["content"] = [{"type": kind}]
+            with self.assertRaises(GateError):
+                self.parse(events)
+        for position in (1, 2):
+            events = stream()
+            events[position]["session_id"] = "different"
+            with self.assertRaises(GateError):
+                self.parse(events)
+
+    def test_error_and_missing_metadata_refused(self):
+        for key in ("session_id", "tools", "mcp_servers"):
+            events = stream()
+            events[0].pop(key)
+            with self.assertRaises(GateError):
+                self.parse(events)
+        events = stream()
+        events[-1]["is_error"] = True
+        with self.assertRaises(GateError):
+            self.parse(events)
+
+    def test_malformed_stream_nesting_and_duplicates_refused(self):
+        for replacement in (None, [], "message"):
+            events = stream()
+            events[1]["message"] = replacement
+            with self.assertRaises(GateError):
+                self.parse(events)
+        for content in (None, [None], "text"):
+            events = stream()
+            events[1]["message"]["content"] = content
+            with self.assertRaises(GateError):
+                self.parse(events)
+        events = stream()
+        for bad in (events + [events[0]], events + [events[-1]], events[:-1] + [events[-1] | {"modelUsage": []}]):
+            with self.assertRaises(GateError):
+                self.parse(bad)
+
+    def test_stream_cannot_skip_subscription_guard(self):
+        for auth in (None, "api"):
+            with patch("project_creator.providers.execute") as execute:
+                provider = CLIProvider("claude", {"output": "claude-stream", "auth_mode": auth}, audit=lambda *a: None)
+                with self.assertRaisesRegex(GateError, "subscription-only"):
+                    provider.invoke("implement", "chosen", {}, Path.cwd())
+                execute.assert_not_called()
+
+    def test_provider_uses_the_same_environment_snapshot_it_validated(self):
+        config = {"output": "claude-stream", "auth_mode": "claude-subscription", "attestation": {"mode": "stream"},
+                  "argv": [sys.executable, "--model", "{model}"]}
+        original_path = os.environ.get("PATH")
+        snapshots = []
+        def validate(cfg, purpose, *, environment):
+            snapshots.append(environment)
+            os.environ["PATH"] = "synthetic-change-after-validation"
+        replies = [Result(0, '{"loggedIn":true,"authMethod":"claude.ai"}', "", 0),
+                   Result(0, "\n".join(json.dumps(x) for x in stream()), "", 0)]
+        with patch.dict(os.environ), patch("project_creator.providers.validate_capability", side_effect=validate), patch("project_creator.providers.execute", side_effect=replies) as execute:
+            CLIProvider("claude", config, audit=lambda *a: None).invoke("implement", "chosen", {}, Path.cwd())
+            for call in execute.call_args_list:
+                self.assertIs(call.kwargs["env"], snapshots[0])
+                self.assertEqual(call.kwargs["env"].get("PATH"), original_path)
+
+    def test_exact_json_fence_only(self):
+        self.assertEqual(self.parse(stream(result='```json\n{"ok":true}\n```'))[0], {"ok": True})
+        for result in ('before {"ok":true}', '[1]', '```json\n{}\n```\nrun shell'):
+            with self.assertRaises((GateError, ValueError)):
+                self.parse(stream(result=result))
+
+    def test_subscription_environment_no_api_route(self):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "synthetic", "ANTHROPIC_BASE_URL": "synthetic", "ANTHROPIC_CUSTOM_HEADERS": "synthetic", "NODE_OPTIONS": "synthetic", "CLAUDE_CONFIG_DIR": "synthetic", "HTTPS_PROXY": "synthetic"}):
+            env = provider_environment({"auth_mode": "claude-subscription"})
+            self.assertNotIn("ANTHROPIC_API_KEY", env)
+            self.assertNotIn("ANTHROPIC_BASE_URL", env)
+            self.assertNotIn("ANTHROPIC_CUSTOM_HEADERS", env)
+            for key in ("NODE_OPTIONS", "CLAUDE_CONFIG_DIR", "HTTPS_PROXY"):
+                self.assertNotIn(key, env)
+            self.assertEqual(env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"], "1")
+            self.assertEqual(os.environ["ANTHROPIC_API_KEY"], "synthetic")
+
+    def test_docker_rejects_unpinned_image_and_pre_cancel(self):
+        cfg = docker_config() | {"image": "python:latest"}
+        with self.assertRaises(GateError):
+            DockerSandbox(cfg, ["source.py"])
+        cfg["image"] = "python@sha256:" + "a" * 64
+        with tempfile.TemporaryDirectory() as tmp, patch("project_creator.docker_sandbox.execute") as launch:
+            runner = DockerSandbox(cfg, ["source.py"], cancelled=lambda: True)
+            with self.assertRaises(GateError):
+                runner.run(["python", "source.py"], Path(tmp), "test")
+            launch.assert_not_called()
+
+    def test_docker_rejects_remote_daemon_and_ignores_ambient_context(self):
+        with self.assertRaises(GateError):
+            DockerSandbox(docker_config() | {"daemon_host": "tcp://example.invalid:2375"}, ["source.py"])
+        with patch.dict(os.environ, {"DOCKER_CONTEXT": "untrusted", "DOCKER_HOST": "tcp://example.invalid:2375"}), patch("project_creator.docker_sandbox.execute", return_value=Result(0, "", "", 0)) as execute:
+            DockerSandbox(docker_config(), ["source.py"]).command(["version"], Path.cwd())
+            call = execute.call_args
+            self.assertEqual(call.args[0][1:3], ["--host", "npipe:////./pipe/fixture"])
+            self.assertFalse("DOCKER_CONTEXT" in call.kwargs["env"])
+            self.assertFalse("DOCKER_HOST" in call.kwargs["env"])
+            self.assertTrue("project-creator-docker-client-" in call.kwargs["env"]["DOCKER_CONFIG"])
+
+    def test_docker_creates_inspects_then_starts_exact_entrypoint_without_pull(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "source.py").write_text("pass")
+            runner = DockerSandbox(docker_config(), ["source.py"])
+            seen = []
+            def call(args, cwd, **kwargs):
+                seen.append(args)
+                return Result(0, "c" * 64 if args[0] == "create" else "", "", 0)
+            with patch.object(runner, "remove_owned"), patch.object(runner, "command", side_effect=call), patch.object(runner, "verify_container") as inspect:
+                runner.run(["python", "source.py"], root, "unit")
+                create = next(x for x in seen if x[0] == "create")
+                self.assertIn("--pull=never", create)
+                self.assertIn("--no-healthcheck", create)
+                self.assertEqual(create[create.index("--log-driver") + 1], "none")
+                i = create.index("--entrypoint")
+                self.assertEqual(create[i+1:], ["python", docker_config()["image"], "source.py"])
+                self.assertEqual(seen[-1][:2], ["start", "--attach"])
+                self.assertEqual(seen[-1][-1], "c" * 64)
+                inspect.assert_called_once()
+
+    def test_cleanup_does_not_mistake_id_for_name(self):
+        runner = DockerSandbox(docker_config(), ["source.py"])
+        identity = "c" * 64
+        with patch.object(runner, "verify_daemon"), patch.object(runner, "command", side_effect=[Result(1, "", "", 0), Result(0, identity, "", 0)]) as command:
+            with self.assertRaisesRegex(GateError, "ownership cannot"):
+                runner.remove_owned(identity, "owner", Path.cwd())
+            self.assertIn("id=" + identity, command.call_args_list[-1].args[0])
+
+    def test_realized_healthcheck_and_logging_must_be_disabled(self):
+        runner = DockerSandbox(docker_config(), ["source.py"])
+        root = Path.cwd()
+        identity = "c" * 64
+        value = {"Id": identity, "State": {"Running": False},
+                 "Mounts": [{"Type": "bind", "Source": str(root), "Destination": "/workspace", "RW": False}],
+                 "HostConfig": {"ReadonlyRootfs": True, "NetworkMode": "none", "Privileged": False, "CapDrop": ["ALL"],
+                                "SecurityOpt": ["no-new-privileges:true"], "Memory": 512*1024*1024, "NanoCpus": 1_000_000_000,
+                                "PidsLimit": 128, "Tmpfs": {"/tmp": "rw,noexec,nosuid,size=64m"}, "LogConfig": {"Type": "none", "Config": {}}},
+                 "Config": {"User": "65534:65534", "Healthcheck": {"Test": ["NONE"]}, "Entrypoint": ["python"],
+                            "Cmd": ["source.py"], "WorkingDir": "/workspace", "Image": docker_config()["image"]}}
+        with patch.object(runner, "command", return_value=Result(0, json.dumps(value), "", 0)):
+            runner.verify_container(identity, root, ["python", "source.py"], root)
+        value["HostConfig"]["LogConfig"]["Type"] = "syslog"
+        with patch.object(runner, "command", return_value=Result(0, json.dumps(value), "", 0)), self.assertRaisesRegex(GateError, "daemon_logging"):
+            runner.verify_container(identity, root, ["python", "source.py"], root)
+        value["HostConfig"]["LogConfig"]["Type"] = "none"
+        value["Config"]["Healthcheck"]["Test"] = ["CMD", "unapproved"]
+        with patch.object(runner, "command", return_value=Result(0, json.dumps(value), "", 0)), self.assertRaisesRegex(GateError, "healthcheck"):
+            runner.verify_container(identity, root, ["python", "source.py"], root)
+
+    def test_docker_proof_requires_controller_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = Path(tmp) / "evidence.json"
+            cfg = docker_config() | {"kind": "docker"}
+            payload = {"schema_version": 1, "purpose": "verification", "configuration_hash": digest(cfg), "probe_harness_sha256": "fixture",
+                       "cases": {x: True for x in ("outside_read_denied", "outside_write_denied", "network_denied", "child_cleanup")}}
+            evidence.write_text(json.dumps(payload))
+            sha = digest(evidence.read_bytes())
+            cfg["proof"] = {"schema_version": 1, "probe_harness_sha256": "fixture", "checked_at": datetime.now(timezone.utc).isoformat(), "configuration_hash": digest(cfg),
+                            "executable_sha256": digest(Path(sys.executable).read_bytes()), "evidence_files": {sha: str(evidence)},
+                            "cases": {x: {"expected": True, "observed": True, "passed": True, "evidence_sha256": sha}
+                                      for x in ("outside_read_denied", "outside_write_denied", "network_denied", "child_cleanup")}}
+            with patch.dict("project_creator.providers._HOST_CAPABILITIES", {digest(cfg): "verification"}):
+                with self.assertRaisesRegex(GateError, "runtime file missing"):
+                    validate_capability(cfg, "verification")
+            evidence.write_text("fabricated")
+            fake_hash = digest(evidence.read_bytes())
+            cfg["proof"]["evidence_files"] = {fake_hash: str(evidence)}
+            for case in cfg["proof"]["cases"].values():
+                case["evidence_sha256"] = fake_hash
+            with patch.dict("project_creator.providers._HOST_CAPABILITIES", {digest(cfg): "verification"}):
+                with self.assertRaisesRegex(GateError, "does not substantiate"):
+                    validate_capability(cfg, "verification")
+
+    def test_self_forged_receipt_does_not_grant_host_authority(self):
+        cfg = docker_config() | {"proof": {"passed": True, "cases": {"all": True}}}
+        with self.assertRaisesRegex(GateError, "trusted host"):
+            validate_capability(cfg, "verification")
+
+    def test_docker_route_preserves_fixed_test_argv(self):
+        from project_creator.processes import Result
+        cfg = {"kind": "docker"}
+        with patch("project_creator.providers.validate_capability"), patch("project_creator.docker_sandbox.DockerSandbox") as sandbox:
+            sandbox.return_value.run.return_value = Result(0, "verified", "", 0.1)
+            result = VerificationRunner(cfg, {"unit": ["python", "tests.py"]}, read_set=["source.py"]).run(["unit"], Path.cwd())
+            sandbox.return_value.run.assert_called_once_with(["python", "tests.py"], Path.cwd(), "unit")
+            self.assertEqual(result[0]["exit_code"], 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

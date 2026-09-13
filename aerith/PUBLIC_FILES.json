@@ -8,10 +8,12 @@
   "PUBLIC_FILES.json",
   "build_release.py",
   "project-creator.py",
+  "probe_docker.py",
   "project_creator/__init__.py",
   "project_creator/admission.py",
   "project_creator/cli.py",
   "project_creator/contracts.py",
+  "project_creator/docker_sandbox.py",
   "project_creator/engine.py",
   "project_creator/mirror.py",
   "project_creator/models.py",
@@ -26,5 +28,6 @@
   "skills/to-tickets/SKILL.md",
   "skills/implement/SKILL.md",
   "skills/spec-review/SKILL.md",
-  "tests/test_controller.py"
+  "tests/test_controller.py",
+  "tests/test_edges.py"
 ]

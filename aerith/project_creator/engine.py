@@ -114,6 +114,7 @@ class Engine:
 
     def _verifier(self, run):
         return VerificationRunner(run["config"].get("verification_sandbox", {}), run["config"]["tests"],
+                                  read_set=list(set(run["config"]["read_set"] + run["config"]["write_set"])),
                                   cancelled=lambda: self.cancelled(run["id"]))
 
     def cancelled(self, run_id, *, manual_revision=None):
@@ -210,8 +211,14 @@ class Engine:
         directory = self.store.root / run["id"] / "calls" / identity
         result_path = directory / "response.json"
         if result_path.exists():
+            cached_raw = result_path.read_bytes()
+            receipts = [json.loads(row[0]) for row in self.store.db.execute(
+                "SELECT data FROM events WHERE run_id=? AND kind='provider_response_saved'", (run["id"],))]
+            matching = [x for x in receipts if x.get("packet_hash") == identity]
+            if len(matching) != 1 or matching[0].get("file_hash") != digest(cached_raw):
+                raise GateError("cached response changed or lacks a durable receipt; reconciliation required")
             self.store.audit(run["id"], "skill_cached", {"stage": stage, "packet_hash": identity, "admission": admitted})
-            return json.loads(result_path.read_text(encoding="utf-8"))
+            return json.loads(cached_raw)
         self.store.audit(run["id"], "skill_invocation", {"stage": stage, "packet_hash": identity, "admission": admitted})
         directory.mkdir(parents=True, exist_ok=True)
         atomic_text(directory / "packet.json", json.dumps(packet, ensure_ascii=False, indent=2))
@@ -219,7 +226,10 @@ class Engine:
         if not isinstance(response, dict):
             raise GateError("provider response must be an object")
         safe_text(json.dumps(response, ensure_ascii=False))
-        atomic_text(result_path, json.dumps(response, ensure_ascii=False, indent=2))
+        response_text = json.dumps(response, ensure_ascii=False, indent=2)
+        atomic_text(result_path, response_text)
+        self.store.audit(run["id"], "provider_response_saved", {"packet_hash": identity,
+                         "file_hash": digest(response_text)})
         return response
 
     def checkpoint(self, run, event):

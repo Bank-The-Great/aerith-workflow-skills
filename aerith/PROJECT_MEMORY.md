@@ -12,6 +12,12 @@
 - Bind current run data, not just event summaries, into the integrity ledger.
 - A failed ticket needs a persistent attempt cap independent of changing code.
 - Read-only review must not change ticket completion or create delivery commits.
+- A Windows pathname is not a Linux container host-path probe. Establish host
+  exclusion from the daemon's exact inspected mount set before starting code.
+- Pin the local Docker endpoint and identity, clear client context/proxy config,
+  prohibit implicit image pulls and override image ENTRYPOINT with approved argv.
+- Requested-model metadata is not automatically observed-response metadata.
+  Validate each provider's envelope provenance instead of inventing attestation.
 
 ## Lesson Log
 
@@ -26,3 +32,12 @@
 - 2026-09-13: A Windows sandbox's external-write denial did not establish
   external-read or network denial. Synthetic probes demonstrated the gap;
   production activation remains blocked pending a proved isolation backend.
+- 2026-09-13: Docker Desktop was explicitly authorized. Real source-mount,
+  network, root-read-only and descendant-cleanup probes passed after independent
+  review corrected a cross-OS pathname false positive, ambient daemon routing,
+  implicit pulls and image-entrypoint ambiguity. The actual verification route
+  rejected a seeded wrong-record change. Startup crash sweeping is still pending.
+- 2026-09-13: Claude's usage envelope initially included a utility-model call.
+  Disabling nonessential traffic removed that auxiliary call. A live probe then
+  verified two exact task models through assistant-message and usage metadata,
+  in distinct sessions with tools/MCP disabled. This is not full-pipeline proof.
