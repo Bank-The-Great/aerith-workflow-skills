@@ -24,6 +24,7 @@ def probe(executable, image, evidence, daemon_host, daemon_id):
         worktree.mkdir()
         program = '''import json, pathlib, socket
 out = {}
+out['exact_source_set'] = sorted(str(p.relative_to('/workspace')) for p in pathlib.Path('/workspace').rglob('*')) == ['source.py']
 outside = pathlib.Path('/excluded-host/outside.txt')
 try:
     outside.read_bytes()
@@ -51,7 +52,8 @@ print(json.dumps(out))
 '''
         (worktree / "source.py").write_text(program, encoding="utf-8")
         runner = DockerSandbox(cfg, ["source.py"])
-        result = runner.run(["python", "source.py"], worktree, "containment")
+        result = runner.run(["python", "source.py"], worktree, "containment",
+                            expected_files={"source.py": digest((worktree / "source.py").read_bytes())})
         if result.returncode:
             raise GateError("synthetic containment program failed")
         cases = json.loads(result.stdout)
@@ -80,7 +82,8 @@ print(json.dumps(out))
         watcher.start()
         timeout_fired = False
         try:
-            timeout_runner.run(["python", "-c", "import subprocess,time; subprocess.Popen(['python','-c',\"import time; print('descendant-ready',flush=True); time.sleep(60)\"]); time.sleep(60)"], worktree, "cleanup")
+            timeout_runner.run(["python", "-c", "import subprocess,time; subprocess.Popen(['python','-c',\"import time; print('descendant-ready',flush=True); time.sleep(60)\"]); time.sleep(60)"], worktree, "cleanup",
+                               expected_files={"source.py": digest((worktree / "source.py").read_bytes())})
         except GateError as exc:
             if str(exc) != "process timeout":
                 raise
@@ -96,8 +99,9 @@ print(json.dumps(out))
             raise GateError("outside canary changed")
         harness_hash = digest(Path(__file__).read_bytes())
         executable_sha256 = digest(executable.read_bytes())
-        runtime = Path(__file__).resolve().parent / "project_creator" / "docker_sandbox.py"
-        runtime_files = {str(runtime): digest(runtime.read_bytes())}
+        package = Path(__file__).resolve().parent / "project_creator"
+        runtime_files = {str(runtime): digest(runtime.read_bytes()) for runtime in
+                         (package / "contracts.py", package / "processes.py", package / "docker_sandbox.py")}
         payload = {"schema_version": 1, "purpose": "verification", "probe_harness_sha256": harness_hash,
                    "checked_at": datetime.now(timezone.utc).isoformat(), "image": image,
                    "configuration_hash": digest(cfg), "cases": cases,
@@ -105,7 +109,7 @@ print(json.dumps(out))
                    "daemon_inspection": runner.last_inspection,
                    "daemon_id": daemon_id, "container_id": runner.last_container_id,
                    "mounts_sha256": runner.last_mounts_hash, "source_packet_sha256": digest(program),
-                   "host_exclusion_basis": "exact individually locked read-only file mounts, no containing worktree/other bind/volume, read-only root, isolated network; host canary is never mounted",
+                    "host_exclusion_basis": "read-only empty tmpfs shadows image workspace; exact individually locked read-only file mounts plus an exact-entry pre-exec guard; no containing worktree/other bind/volume; read-only root and isolated network; host canary is never mounted",
                    "test_kind": "real Docker process, synthetic data, no model"}
         evidence.mkdir(parents=True, exist_ok=True)
         raw = json.dumps(payload, indent=2) + "\n"

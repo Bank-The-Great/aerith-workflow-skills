@@ -1,7 +1,10 @@
-"""Networkless, non-root verification over individually locked source files.
+"""Networkless, non-root verification over an exact locked source packet.
 
-Only exact reviewed files are mounted, read-only. Neither the Git metadata,
-private run state, host home, Docker socket nor host environment is exposed.
+An empty read-only tmpfs shadows image content at /workspace, then only exact
+reviewed files are mounted, read-only.  An in-container guard rejects any entry
+other than those files and their parent directories before the approved command
+runs. Neither Git metadata, private state, host home, Docker socket nor the host
+environment is exposed.
 Container identity is deterministic so recovery can reconcile a dead client's
 container before rerunning a side-effect-free verification step.
 """
@@ -67,14 +70,18 @@ class DockerSandbox:
         value = json.loads(result.stdout)
         host, cfg = value.get("HostConfig", {}), value.get("Config", {})
         mounts = value.get("Mounts", [])
+        requested_mounts = host.get("Mounts", [])
         bind = [x for x in mounts if x.get("Type") == "bind"]
-        others = [x for x in mounts if x.get("Type") != "bind"]
+        shadow = [x for x in mounts if x.get("Type") == "tmpfs" and x.get("Destination") == "/workspace"]
+        others = [x for x in mounts if x.get("Type") not in {"bind", "tmpfs"}
+                  or (x.get("Type") == "tmpfs" and x.get("Destination") != "/workspace")]
         realized = {(x.get("Destination"), x.get("Source", "").replace("\\", "/").casefold()): x
                     for x in bind}
         expected_mounts = {("/workspace/" + relative,
                             frozenset(self._host_source_candidates(source)))
                            for relative, source in sources.items()}
-        mount_set_exact = len(bind) == len(expected_mounts) and not others
+        mount_set_exact = (len(bind) == len(expected_mounts) and len(shadow) == 1 and not others
+                           and shadow[0].get("RW") is False)
         for destination, candidates in expected_mounts:
             matches = [entry for (actual_destination, actual_source), entry in realized.items()
                        if actual_destination == destination and actual_source in candidates]
@@ -82,6 +89,12 @@ class DockerSandbox:
         checks = {
             "container_identity": value.get("Id") == name and value.get("State", {}).get("Running") is False,
             "mount_set_exact": mount_set_exact,
+            "workspace_shadow_exact": (len([x for x in requested_mounts
+                                              if x.get("Type") == "tmpfs" and x.get("Target") == "/workspace"
+                                              and x.get("ReadOnly") is True
+                                              and x.get("TmpfsOptions") == {"SizeBytes": 1048576, "Mode": 365}]) == 1
+                                       and len(requested_mounts) == len(sources) + 1
+                                       and not host.get("Binds")),
             "root_read_only": host.get("ReadonlyRootfs") is True,
             "network_none": host.get("NetworkMode") == "none",
             "non_root": cfg.get("User") == "65534:65534",
@@ -100,6 +113,27 @@ class DockerSandbox:
         self.last_inspection = checks
         self.last_container_id = name
         self.last_mounts_hash = digest(mounts)
+
+    @staticmethod
+    def guarded_command(command, sources):
+        """Check the realized workspace entry set before replacing the guard."""
+        expected = set(sources)
+        for relative in sources:
+            parent = Path(relative).parent
+            while str(parent) != ".":
+                expected.add(parent.as_posix())
+                parent = parent.parent
+        guard = (
+            "import json,os,pathlib,sys;"
+            "root=pathlib.Path('/workspace');"
+            "expected=json.loads(sys.argv[1]);"
+            "entries=list(root.rglob('*'));"
+            "actual=sorted(str(p.relative_to(root)) for p in entries);"
+            "bad=actual!=expected or any(p.is_symlink() for p in entries);"
+            "sys.exit(126) if bad else None;"
+            "os.execvp(sys.argv[2],sys.argv[2:])"
+        )
+        return ["python", "-I", "-c", guard, json.dumps(sorted(expected)), *command]
 
     def identity(self, worktree, test_id):
         owner = digest(str(worktree.resolve()))
@@ -159,6 +193,7 @@ class DockerSandbox:
                 raise GateError("verification source disappeared after controller snapshot")
         if not sources:
             raise GateError("verification requires at least one present source file")
+        guarded = self.guarded_command(command, sources)
         with reviewed_files(hashes):
             args = ["create", "--pull=never", "--rm", "--name", name,
                     "--label", "project-creator.owner=" + owner,
@@ -166,13 +201,15 @@ class DockerSandbox:
                     "--security-opt", "no-new-privileges:true", "--pids-limit", "128",
                     "--no-healthcheck", "--log-driver", "none",
                     "--memory", "512m", "--cpus", "1", "--user", "65534:65534",
-                    "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "--workdir", "/workspace",
+                    "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
+                    "--mount", "type=tmpfs,target=/workspace,tmpfs-size=1048576,tmpfs-mode=0555,readonly",
+                    "--workdir", "/workspace",
                     "--env", "PYTHONDONTWRITEBYTECODE=1", "--env", "PYTHONUNBUFFERED=1",
             ]
             for relative, source in sources.items():
                 args.extend(["--mount", "type=bind,source=" + str(source)
                              + ",target=/workspace/" + relative + ",readonly"])
-            args.extend(["--entrypoint", command[0], self.image, *command[1:]])
+            args.extend(["--entrypoint", guarded[0], self.image, *guarded[1:]])
             container_id = name
             try:
                 created = self.command(args, worktree, timeout=30, cancelled=self.cancelled)
@@ -181,7 +218,7 @@ class DockerSandbox:
                 if not re.fullmatch(r"[a-f0-9]{64}", created.stdout.strip()):
                     raise GateError("test container omitted its immutable identity")
                 container_id = created.stdout.strip()
-                self.verify_container(container_id, sources, command, worktree)
+                self.verify_container(container_id, sources, guarded, worktree)
                 return self.command(["start", "--attach", container_id], worktree,
                                     timeout=self.config.get("timeout_seconds", 600), cancelled=self.cancelled)
             finally:

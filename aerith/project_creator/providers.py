@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
+import threading
 import types
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -14,6 +16,7 @@ from .output_schemas import schema_for, validate_output
 from .provenance import parse_codex_data_only, parse_codex_provenance, parse_gemini_provenance
 
 _HOST_CAPABILITIES = {}
+_VALIDATED_RUNTIME_LOCK = threading.RLock()
 
 
 def configure_host_capabilities(approved):
@@ -110,7 +113,7 @@ def validate_capability(config: dict, purpose: str, *, environment=None):
             raise ValueError()
     except (ValueError, KeyError, TypeError) as exc:
         raise GateError(f"{purpose} containment proof expired or absent") from exc
-    required = {"outside_read_denied", "outside_write_denied", "network_denied", "child_cleanup"} if purpose == "verification" else {"fresh_context", "tools_disabled", "ambient_disabled", "child_cleanup", "model_attestation", "subscription_auth_only"}
+    required = {"exact_source_set", "outside_read_denied", "outside_write_denied", "network_denied", "child_cleanup"} if purpose == "verification" else {"fresh_context", "tools_disabled", "ambient_disabled", "child_cleanup", "model_attestation", "subscription_auth_only"}
     cases = proof.get("cases", {})
     if not all(isinstance(cases.get(key), dict) and cases[key].get("passed") is True
                and cases[key].get("expected") == cases[key].get("observed")
@@ -147,10 +150,12 @@ def validate_capability(config: dict, purpose: str, *, environment=None):
         raise GateError(f"{purpose} executable changed after proof")
     dependencies = proof.get("runtime_files", {})
     if config.get("kind") == "docker":
-        runtime = Path(__file__).resolve().with_name("docker_sandbox.py")
-        if dependencies.get(str(runtime)) != digest(runtime.read_bytes()):
-            raise GateError("Docker runtime file missing from proof")
-        harness = runtime.parents[1] / "probe_docker.py"
+        package = Path(__file__).resolve().parent
+        required_runtime = {package / name for name in ("contracts.py", "processes.py", "docker_sandbox.py")}
+        for runtime in required_runtime:
+            if dependencies.get(str(runtime)) != digest(runtime.read_bytes()):
+                raise GateError("Docker runtime closure file missing from proof")
+        harness = package.parent / "probe_docker.py"
         if proof.get("probe_harness_sha256") != digest(harness.read_bytes()):
             raise GateError("Docker probe harness changed after host review")
     for arg in config["argv"][1:]:
@@ -168,16 +173,57 @@ def validate_capability(config: dict, purpose: str, *, environment=None):
 
 
 def _verified_docker_class(runtime_bytes):
-    """Compile the exact Docker adapter bytes validated in this invocation."""
-    path = Path(__file__).resolve().with_name("docker_sandbox.py")
-    raw = runtime_bytes.get(str(path)) if isinstance(runtime_bytes, dict) else None
-    if not isinstance(raw, bytes):
-        raise GateError("validated Docker runtime bytes are unavailable")
-    module = types.ModuleType("project_creator._validated_docker_sandbox")
-    module.__file__ = str(path)
-    module.__package__ = "project_creator"
-    exec(compile(raw, str(path), "exec"), module.__dict__)
-    cls = module.__dict__.get("DockerSandbox")
+    """Compile the exact validated adapter and its local import closure."""
+    package_path = Path(__file__).resolve().parent
+    paths = {leaf: package_path / (leaf + ".py")
+             for leaf in ("contracts", "processes", "docker_sandbox")}
+    raw = {leaf: runtime_bytes.get(str(path)) if isinstance(runtime_bytes, dict) else None
+           for leaf, path in paths.items()}
+    if not all(isinstance(value, bytes) for value in raw.values()):
+        raise GateError("validated Docker runtime closure bytes are unavailable")
+    package_name = "project_creator._validated_docker_" + digest(
+        {leaf: digest(value) for leaf, value in raw.items()})[:16]
+
+    def namespace(leaf):
+        return {"__name__": package_name + "." + leaf,
+                "__file__": str(paths[leaf]), "__package__": package_name}
+
+    contracts = namespace("contracts")
+    exec(compile(raw["contracts"], str(paths["contracts"]), "exec"), contracts)
+    required_contracts = {name: contracts.get(name) for name in ("GateError", "digest", "scoped_path")}
+    if not all(required_contracts.values()):
+        raise GateError("validated Docker contract helpers are unavailable")
+
+    processes_source = raw["processes"].decode("utf-8")
+    process_import = "from .contracts import GateError"
+    if processes_source.count(process_import) != 1:
+        raise GateError("validated process helper import is not exact")
+    process_name = package_name + ".processes"
+    process_module = types.ModuleType(process_name)
+    process_module.__dict__.update(namespace("processes") | {"GateError": required_contracts["GateError"]})
+    with _VALIDATED_RUNTIME_LOCK:
+        sys.modules[process_name] = process_module
+        try:
+            exec(compile(processes_source.replace(process_import, "# GateError injected from validated bytes"),
+                         str(paths["processes"]), "exec"), process_module.__dict__)
+        finally:
+            sys.modules.pop(process_name, None)
+    processes = process_module.__dict__
+    required_processes = {name: processes.get(name)
+                          for name in ("execute", "minimal_environment", "reviewed_files")}
+    if not all(required_processes.values()):
+        raise GateError("validated Docker process helpers are unavailable")
+
+    docker_source = raw["docker_sandbox"].decode("utf-8")
+    imports = ("from .contracts import GateError, digest, scoped_path",
+               "from .processes import execute, minimal_environment, reviewed_files")
+    if any(docker_source.count(statement) != 1 for statement in imports):
+        raise GateError("validated Docker helper imports are not exact")
+    for statement in imports:
+        docker_source = docker_source.replace(statement, "# helper injected from validated bytes")
+    module = namespace("docker_sandbox") | required_contracts | required_processes
+    exec(compile(docker_source, str(paths["docker_sandbox"]), "exec"), module)
+    cls = module.get("DockerSandbox")
     if not isinstance(cls, type):
         raise GateError("validated Docker runtime has no sandbox class")
     return cls
@@ -240,7 +286,7 @@ class CLIProvider:
                                cancelled=self.cancelled,
                                expected_executable_sha256=self.config.get("proof", {}).get("executable_sha256"),
                                expected_runtime_sha256=self.config.get("proof", {}).get("runtime_files", {}),
-                               require_empty_cwd=True)
+                               require_neutral_cwd=True)
                 try:
                     status = json.loads(auth.stdout)
                 except ValueError as exc:
@@ -257,7 +303,7 @@ class CLIProvider:
                              cancelled=self.cancelled, env=env,
                              expected_executable_sha256=self.config.get("proof", {}).get("executable_sha256"),
                              expected_runtime_sha256=self.config.get("proof", {}).get("runtime_files", {}),
-                             require_empty_cwd=True)
+                             require_neutral_cwd=True)
         if result.returncode:
             self.audit("provider_failure", {"vendor": self.name, "exit_code": result.returncode})
             raise GateError("provider refused or failed; inspect authentication/model availability outside the AI transcript")

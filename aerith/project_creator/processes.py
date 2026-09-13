@@ -171,11 +171,22 @@ def _locked_windows_reviewed_path(path: Path, expected_sha256: str):
         raise
 
 
-def _locked_windows_empty_directory(path: Path):
-    """Hold an empty directory and every mutable ancestor against retargeting."""
+def _locked_windows_neutral_directory():
+    """Return a system-owned CWD that the current token cannot populate.
+
+    Holding a directory handle prevents renaming the directory, but Windows does
+    not make its child namespace immutable.  A freshly created user-owned empty
+    directory is therefore not an isolation boundary: another same-token process
+    can add AGENTS.md or vendor configuration after the emptiness check.  The
+    Windows system directory is suitable only when the active token cannot add,
+    delete, or take ownership of entries and no known ambient instruction entry
+    exists in it or an ancestor.
+    """
     import ctypes
     from ctypes import wintypes
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetSystemDirectoryW.argtypes = [wintypes.LPWSTR, wintypes.UINT]
+    kernel.GetSystemDirectoryW.restype = wintypes.UINT
     kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
                                    ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
                                    wintypes.HANDLE]
@@ -183,6 +194,32 @@ def _locked_windows_empty_directory(path: Path):
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     invalid = wintypes.HANDLE(-1).value
     flags = 0x02000000 | 0x00200000  # BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = kernel.GetSystemDirectoryW(buffer, len(buffer))
+    if not length or length >= len(buffer):
+        raise GateError("could not resolve neutral provider working directory")
+    path = Path(buffer.value)
+    if not path.is_absolute() or not path.is_dir() or not _reparse_free(path):
+        raise GateError("neutral provider working directory is not trusted")
+    ambient_names = {"AGENTS.md", "CLAUDE.md", "GEMINI.md", ".claude", ".codex", ".gemini", ".agents", ".mcp.json"}
+    for directory in (path, *path.parents):
+        if any((directory / name).exists() for name in ambient_names):
+            raise GateError("neutral provider working directory contains ambient configuration")
+
+    # Directory-specific FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY and
+    # FILE_DELETE_CHILD, plus the standard delete/DACL/owner rights.  Probe each
+    # independently: a combined request could hide one granted right behind a
+    # different denied right.  No filesystem mutation is performed.
+    share_all = 0x00000001 | 0x00000002 | 0x00000004
+    dangerous_rights = (0x00000002, 0x00000004, 0x00000040, 0x00010000, 0x00040000, 0x00080000)
+    for right in dangerous_rights:
+        handle = kernel.CreateFileW(str(path), right, share_all, None, 3, flags, None)
+        if handle != invalid:
+            kernel.CloseHandle(handle)
+            raise GateError("neutral provider working directory is writable by the active token")
+        if ctypes.get_last_error() != 5:  # ERROR_ACCESS_DENIED is the only safe result.
+            raise GateError("neutral provider working-directory rights could not be verified")
+
     handles = []
     try:
         parents = list(path.parents)
@@ -190,14 +227,15 @@ def _locked_windows_empty_directory(path: Path):
             handle = kernel.CreateFileW(str(directory), 0x80000000, 0x00000001,
                                         None, 3, flags, None)
             if handle == invalid:
-                raise GateError("could not lock provider working directory")
+                raise GateError("could not lock neutral provider working directory")
             handles.append(handle)
             attributes = ctypes.windll.kernel32.GetFileAttributesW(str(directory))
             if attributes == 0xFFFFFFFF or attributes & 0x400:
-                raise GateError("provider working directory contains a reparse point")
-        if any(path.iterdir()):
-            raise GateError("provider working directory is not empty at launch")
-        return _WindowsPathLock(handles, None)
+                raise GateError("neutral provider working directory contains a reparse point")
+        for directory in (path, *path.parents):
+            if any((directory / name).exists() for name in ambient_names):
+                raise GateError("neutral provider working directory gained ambient configuration")
+        return path, _WindowsPathLock(handles, None)
     except BaseException:
         for handle in reversed(handles):
             kernel.CloseHandle(handle)
@@ -246,29 +284,26 @@ def reviewed_files(expected_hashes):
 
 def execute(argv: list[str], *, cwd: Path, stdin="", timeout=600, cancelled=lambda: False,
             max_bytes=2_000_000, env=None, expected_executable_sha256=None,
-            expected_runtime_sha256=None, require_empty_cwd=False) -> Result:
+            expected_runtime_sha256=None, require_neutral_cwd=False) -> Result:
     if not isinstance(argv, list) or not argv or not all(isinstance(x, str) and "\x00" not in x for x in argv):
         raise GateError("expected fixed argv")
     if Path(argv[0]).suffix.lower() in {".cmd", ".bat", ".ps1"}:
         raise GateError("resolve CLI to its native executable or node script; no shell wrapper")
     reviewed_locks = _reviewed_locks(expected_executable_sha256, expected_runtime_sha256, argv)
-    if require_empty_cwd:
-        working_directory = Path(cwd)
-        if not working_directory.is_absolute() or not _reparse_free(working_directory):
-            for lock in reversed(reviewed_locks):
-                lock.close()
-            raise GateError("provider working directory is not immutable")
+    working_directory = Path(cwd)
+    if require_neutral_cwd:
         if os.name != "nt":
             for lock in reversed(reviewed_locks):
                 lock.close()
-            raise GateError("atomic empty provider working directory is unsupported on this host")
+            raise GateError("neutral provider working directory is unsupported on this host")
         try:
-            reviewed_locks.append(_locked_windows_empty_directory(working_directory))
+            working_directory, lock = _locked_windows_neutral_directory()
+            reviewed_locks.append(lock)
         except BaseException:
             for lock in reversed(reviewed_locks):
                 lock.close()
             raise
-    kwargs = {"cwd": str(cwd), "stdin": subprocess.PIPE, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "env": env}
+    kwargs = {"cwd": str(working_directory), "stdin": subprocess.PIPE, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "env": env}
     if os.name == "nt":
         kwargs["creationflags"] = 0x00000004 | 0x08000000  # SUSPENDED, NO_WINDOW
     else:

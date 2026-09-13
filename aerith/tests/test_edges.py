@@ -275,7 +275,7 @@ class ProviderEdges(unittest.TestCase):
             CLIProvider("codex", config, audit=lambda *a: None).invoke(
                 "implement", "chosen", packet, Path.cwd())
             self.assertEqual(launch.call_args.kwargs["expected_runtime_sha256"], proof["runtime_files"])
-            self.assertTrue(launch.call_args.kwargs["require_empty_cwd"])
+            self.assertTrue(launch.call_args.kwargs["require_neutral_cwd"])
 
         native = {"argv": [sys.executable], "proof": proof}
         with patch("project_creator.providers.validate_capability"), \
@@ -307,10 +307,15 @@ class ProviderEdges(unittest.TestCase):
                 self.assertIn("--no-healthcheck", create)
                 self.assertEqual(create[create.index("--log-driver") + 1], "none")
                 mounts = [create[index + 1] for index, value in enumerate(create) if value == "--mount"]
-                self.assertEqual(len(mounts), 1)
-                self.assertIn("target=/workspace/source.py,readonly", mounts[0])
+                self.assertEqual(len(mounts), 2)
+                self.assertIn("type=tmpfs,target=/workspace", mounts[0])
+                self.assertIn("readonly", mounts[0])
+                self.assertIn("target=/workspace/source.py,readonly", mounts[1])
                 i = create.index("--entrypoint")
-                self.assertEqual(create[i+1:], ["python", docker_config()["image"], "source.py"])
+                self.assertEqual(create[i+1], "python")
+                self.assertEqual(create[i+2], docker_config()["image"])
+                self.assertEqual(create[i+3:i+5], ["-I", "-c"])
+                self.assertEqual(create[-2:], ["python", "source.py"])
                 self.assertEqual(seen[-1][:2], ["start", "--attach"])
                 self.assertEqual(seen[-1][-1], "c" * 64)
                 inspect.assert_called_once()
@@ -329,14 +334,22 @@ class ProviderEdges(unittest.TestCase):
         identity = "c" * 64
         source = root / "source.py"
         value = {"Id": identity, "State": {"Running": False},
-                 "Mounts": [{"Type": "bind", "Source": str(source), "Destination": "/workspace/source.py", "RW": False}],
+                 "Mounts": [{"Type": "tmpfs", "Source": "", "Destination": "/workspace", "RW": False},
+                            {"Type": "bind", "Source": str(source), "Destination": "/workspace/source.py", "RW": False}],
                  "HostConfig": {"ReadonlyRootfs": True, "NetworkMode": "none", "Privileged": False, "CapDrop": ["ALL"],
-                                "SecurityOpt": ["no-new-privileges:true"], "Memory": 512*1024*1024, "NanoCpus": 1_000_000_000,
-                                "PidsLimit": 128, "Tmpfs": {"/tmp": "rw,noexec,nosuid,size=64m"}, "LogConfig": {"Type": "none", "Config": {}}},
+                                 "SecurityOpt": ["no-new-privileges:true"], "Memory": 512*1024*1024, "NanoCpus": 1_000_000_000,
+                                 "PidsLimit": 128, "Tmpfs": {"/tmp": "rw,noexec,nosuid,size=64m"}, "LogConfig": {"Type": "none", "Config": {}},
+                                 "Binds": None,
+                                 "Mounts": [{"Type": "tmpfs", "Target": "/workspace", "ReadOnly": True,
+                                             "TmpfsOptions": {"SizeBytes": 1048576, "Mode": 365}},
+                                            {"Type": "bind", "Source": str(source), "Target": "/workspace/source.py",
+                                             "ReadOnly": True}]},
                  "Config": {"User": "65534:65534", "Healthcheck": {"Test": ["NONE"]}, "Entrypoint": ["python"],
-                            "Cmd": ["source.py"], "WorkingDir": "/workspace", "Image": docker_config()["image"]}}
+                            "Cmd": [], "WorkingDir": "/workspace", "Image": docker_config()["image"]}}
+        guarded = runner.guarded_command(["python", "source.py"], {"source.py": source})
+        value["Config"]["Cmd"] = guarded[1:]
         with patch.object(runner, "command", return_value=Result(0, json.dumps(value), "", 0)):
-            runner.verify_container(identity, {"source.py": source}, ["python", "source.py"], root)
+            runner.verify_container(identity, {"source.py": source}, guarded, root)
         value["HostConfig"]["LogConfig"]["Type"] = "syslog"
         with patch.object(runner, "command", return_value=Result(0, json.dumps(value), "", 0)), self.assertRaisesRegex(GateError, "daemon_logging"):
             runner.verify_container(identity, {"source.py": source}, ["python", "source.py"], root)
@@ -354,15 +367,15 @@ class ProviderEdges(unittest.TestCase):
             payload = {"schema_version": 1, "purpose": "verification", "configuration_hash": digest(cfg), "probe_harness_sha256": "fixture",
                        "checked_at": checked_at, "executable_sha256": executable_sha256,
                        "runtime_files": {},
-                       "cases": {x: True for x in ("outside_read_denied", "outside_write_denied", "network_denied", "child_cleanup")}}
+                       "cases": {x: True for x in ("exact_source_set", "outside_read_denied", "outside_write_denied", "network_denied", "child_cleanup")}}
             evidence.write_text(json.dumps(payload))
             sha = digest(evidence.read_bytes())
             cfg["proof"] = {"schema_version": 1, "probe_harness_sha256": "fixture", "checked_at": checked_at, "configuration_hash": digest(cfg),
                             "executable_sha256": executable_sha256, "runtime_files": {}, "evidence_files": {sha: str(evidence)},
                             "cases": {x: {"expected": True, "observed": True, "passed": True, "evidence_sha256": sha}
-                                      for x in ("outside_read_denied", "outside_write_denied", "network_denied", "child_cleanup")}}
+                                      for x in ("exact_source_set", "outside_read_denied", "outside_write_denied", "network_denied", "child_cleanup")}}
             with patch.dict("project_creator.providers._HOST_CAPABILITIES", {digest(cfg): "verification"}):
-                with self.assertRaisesRegex(GateError, "runtime file missing"):
+                with self.assertRaisesRegex(GateError, "runtime closure file missing"):
                     validate_capability(cfg, "verification")
             evidence.write_text("fabricated")
             fake_hash = digest(evidence.read_bytes())
@@ -417,12 +430,22 @@ class ProviderEdges(unittest.TestCase):
             self.assertEqual(result[0]["exit_code"], 0)
 
     def test_docker_class_executes_the_already_validated_runtime_bytes(self):
-        runtime = Path(__file__).resolve().parents[1] / "project_creator" / "docker_sandbox.py"
-        raw = runtime.read_bytes()
+        package = Path(__file__).resolve().parents[1] / "project_creator"
+        runtime = {str(package / name): (package / name).read_bytes()
+                   for name in ("contracts.py", "processes.py", "docker_sandbox.py")}
         with patch.object(Path, "read_bytes", side_effect=AssertionError("disk reopened")):
-            cls = _verified_docker_class({str(runtime): raw})
+            cls = _verified_docker_class(runtime)
         self.assertEqual(cls.__name__, "DockerSandbox")
-        self.assertEqual(cls.__module__, "project_creator._validated_docker_sandbox")
+        self.assertTrue(cls.__module__.startswith("project_creator._validated_docker_"))
+
+    def test_docker_class_binds_validated_helper_bytes(self):
+        package = Path(__file__).resolve().parents[1] / "project_creator"
+        runtime = {str(package / name): (package / name).read_bytes()
+                   for name in ("contracts.py", "processes.py", "docker_sandbox.py")}
+        runtime[str(package / "contracts.py")] = runtime[str(package / "contracts.py")].replace(
+            b'class GateError(Exception):', b'class BoundGateError(Exception):')
+        with self.assertRaisesRegex(GateError, "contract helpers"):
+            _verified_docker_class(runtime)
 
 
 if __name__ == "__main__":

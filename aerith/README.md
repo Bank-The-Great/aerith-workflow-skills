@@ -66,16 +66,24 @@ verification. A standalone stage does not invoke preceding stages.
   later import from a replaceable disk path.
   It runs non-root with capability, memory, CPU and process limits; normal
   cancellation removes its specifically owned container. The explicit
-  `probe_docker.py` tests real containment and descendant cleanup using canaries.
+  `probe_docker.py` tests real containment, the exact visible source set, and
+  descendant cleanup using canaries. A read-only empty tmpfs shadows any image
+  content at `/workspace`; a pre-exec guard accepts only the individually locked
+  files and their required parent directories. The adapter, process transport,
+  and contract helper all execute from the exact runtime bytes admitted by the
+  retained proof.
   Image health checks and daemon log forwarding are disabled and inspected;
   start and cleanup use the immutable created container ID.
 - Claude stream parsing checks init metadata, actual assistant-message model,
   model usage, no tools/MCP, and an error-free final JSON result. Subscription
   mode refuses non-subscription auth and excludes API-routing environment flags.
-  Provider and auth processes run from separate controller-created empty
-  temporary directories, never the target worktree or each other's directory;
-  project data crosses only in the bounded packet. This implementation is not
-  itself a provider admission certificate.
+  Provider and auth calls never run in the target worktree or a user-owned empty
+  directory. On Windows, the transport replaces the requested CWD with a
+  system-owned neutral directory only after proving the active token cannot add
+  or delete entries, change its DACL/owner, or find known ambient instruction
+  names there or above it. Project data crosses only in the bounded packet. This
+  implementation is not itself a provider admission certificate and fails
+  closed on hosts without this neutral-CWD admission boundary.
 - The Codex data-only edge sends a bounded controller packet plus a strict
   stage-specific JSON schema. It accepts exactly one metadata record and one
   result record whose request, response, requested-model and provider-model

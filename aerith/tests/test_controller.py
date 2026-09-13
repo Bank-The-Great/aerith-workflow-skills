@@ -359,12 +359,17 @@ class Contracts(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
             self.assertEqual(result.stdout.strip(), "reviewed")
 
-    def test_provider_launch_locks_empty_working_directory_namespace(self):
+    @unittest.skipUnless(os.name == "nt", "Windows neutral CWD contract")
+    def test_provider_launch_ignores_mutable_working_directory_namespace(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / "empty-provider-cwd"
+            root = Path(tmp) / "attacker-controlled-provider-cwd"
             root.mkdir()
-            result = execute([sys.executable, "-c", "print('isolated')"], cwd=root,
-                             require_empty_cwd=True)
+            (root / "AGENTS.md").write_text("ambient")
+            program = ("from pathlib import Path; "
+                       "assert Path.cwd() != Path(r'" + str(root) + "'); "
+                       "assert not Path('AGENTS.md').exists(); print('isolated')")
+            result = execute([sys.executable, "-I", "-c", program], cwd=root,
+                             require_neutral_cwd=True)
             self.assertEqual(result.stdout.strip(), "isolated")
 
     @unittest.skipUnless(os.name == "nt", "Windows file-share lock contract")
@@ -401,7 +406,7 @@ class Contracts(unittest.TestCase):
     def test_boolean_only_containment_claim_is_refused(self):
         cfg = {"argv": [sys.executable]}
         cfg["proof"] = {"configuration_hash": digest(cfg), "checked_at": datetime.now(timezone.utc).isoformat(),
-                        "cases": {k: True for k in ("outside_read_denied", "outside_write_denied", "network_denied", "child_cleanup")}}
+                        "cases": {k: True for k in ("exact_source_set", "outside_read_denied", "outside_write_denied", "network_denied", "child_cleanup")}}
         with self.assertRaisesRegex(GateError, "trusted host"):
             validate_capability(cfg, "verification")
 

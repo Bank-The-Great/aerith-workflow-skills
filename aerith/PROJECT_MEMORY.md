@@ -74,16 +74,29 @@
   records the controller hoped to receive.
 - 2026-09-14: Capability evidence collected in one project directory does not
   authorize a provider in another directory with different local hooks or
-  instructions. Run every provider and auth check from a controller-created
-  empty temporary directory; pass project material only in the bounded packet.
+  instructions. A controller-created empty temporary directory was the first
+  mitigation, but this was superseded by the neutral-CWD rule below because its
+  child namespace remains writable. Pass project material only in the bounded
+  packet.
   Process ownership cleanup must begin immediately after Popen because thread
   allocation/start can fail before the normal polling loop begins.
 - 2026-09-14: An empty provider directory can become ambient input if a preceding
   auth-status process shares it and leaves a local instruction/config file.
-  Give auth and inference different newly created empty directories, and test
-  the boundary by deliberately polluting the auth directory.
+  Giving auth and inference different empty directories prevented cross-call
+  residue but did not prevent concurrent same-token injection; this mitigation
+  is superseded by the neutral-CWD rule below.
 - 2026-09-14: A hash followed by a later import or directory mount is still a
   hash-to-use race. Execute the Docker sandbox class from the already validated
   source bytes. Bind source as individually mounted, read-only files and hold
   every source file plus its namespace until container cleanup; never mount a
   same-user-writable packet directory whose tests can be replaced or augmented.
+- 2026-09-14: A Windows directory handle does not prevent new child entries.
+  Never claim an empty user-owned CWD is immutable. Replace the child CWD with a
+  system-owned neutral directory only after independently denying add-file,
+  add-directory, delete-child, delete, WRITE_DAC and WRITE_OWNER to the active
+  token and checking known ambient names in its ancestry. Fail closed elsewhere.
+- 2026-09-14: Individually mounted files do not hide pre-existing image content
+  at their parent directory. Shadow `/workspace` with an inspected read-only
+  empty tmpfs, then verify the exact visible entry set before exec. Runtime proof
+  must bind and execute the Docker adapter's full local import closure, not only
+  its top-level source file.
