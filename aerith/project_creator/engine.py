@@ -79,6 +79,7 @@ def start(store: Store, project: Path, objective: str, config: dict, catalog: di
            "standalone": standalone, "stage": standalone or STAGES[0], "status": "ready", "base": base,
            "branch": "project-creator/" + rid, "worktree": str(store.root / rid / "worktree"),
            "answers": [], "questions": [], "artifacts": {}, "done_tickets": [], "feedback": [],
+           "ticket_artifacts": {}, "review_sequence": 0, "active_review": None,
            "failure_counts": {}, "repair_attempts": {}, "created_at": now(), "revision": 0, "mirror_status": "not_configured"}
     # A standalone later stage consumes explicit preexisting artifacts, never
     # secretly invokes its predecessors or treats a missing spec as a pass.
@@ -88,6 +89,8 @@ def start(store: Store, project: Path, objective: str, config: dict, catalog: di
         path = store.root / rid / (name + ".md")
         atomic_text(path, artifact(name, value))
         run["artifacts"][name] = digest(path.read_bytes())
+    if "tickets" in run["artifacts"]:
+        Engine(store).save_ticket_documents(run, config["input_artifacts"]["tickets"].get("tickets"))
     store.save(run, "run_created")
     return run
 
@@ -140,11 +143,48 @@ class Engine:
         atomic_text(path, text)
         run["artifacts"][name] = digest(text)
 
+    def save_ticket_documents(self, run, tickets):
+        if not isinstance(tickets, list) or not tickets or not all(isinstance(ticket, dict) for ticket in tickets):
+            raise GateError("canonical ticket list is absent or malformed")
+        expected = {}
+        for ticket in tickets:
+            name = ticket.get("id")
+            if not isinstance(name, str) or not name or "/" in name or "\\" in name:
+                raise GateError("canonical ticket identity is invalid")
+            text = artifact("Ticket " + name, ticket)
+            safe_text(text)
+            expected[name] = digest(text)
+            path = self.store.root / run["id"] / "tickets" / (name + ".md")
+            if path.exists() and digest(path.read_bytes()) != expected[name]:
+                raise GateError("canonical ticket artifact conflicts with generated ticket")
+            if not path.exists():
+                atomic_text(path, text)
+        if run.get("ticket_artifacts") and run["ticket_artifacts"] != expected:
+            raise GateError("canonical ticket artifact set cannot be silently replaced")
+        run["ticket_artifacts"] = expected
+
+    def ticket_documents(self, run):
+        expected = run.get("ticket_artifacts", {})
+        if not isinstance(expected, dict) or not expected:
+            raise GateError("canonical ticket artifacts absent")
+        tickets = []
+        for name in sorted(expected):
+            path = self.store.root / run["id"] / "tickets" / (safe_relative(name) + ".md")
+            if not path.is_file() or digest(path.read_bytes()) != expected[name]:
+                raise GateError("canonical ticket artifact absent or changed")
+            ticket = parse_artifact(path.read_text(encoding="utf-8"))
+            if ticket.get("id") != name:
+                raise GateError("canonical ticket identity mismatch")
+            tickets.append(ticket)
+        return tickets
+
     def assert_frozen(self, run, root, frozen):
         if self.cancelled(run["id"]):
             raise GateError("run paused or cancelled before effect")
         for name in run["artifacts"]:
             self.document(run, name)
+        if run.get("ticket_artifacts"):
+            self.ticket_documents(run)
         audit_scope(root, run["base"], run["config"]["write_set"])
         current = snapshot(root, list(set(run["config"]["read_set"] + run["config"]["write_set"])))
         if current["hash"] != frozen["hash"] or current["head"] != frozen["head"]:
@@ -184,7 +224,7 @@ class Engine:
             self.store.audit(run_id, "manual_review", {"report_hash": digest(report), "spec_vendor": run["spec_vendor"]})
             return report
 
-    def packet(self, run, stage, *, code=None, ticket=None, tests=None, scope=None):
+    def packet(self, run, stage, *, code=None, ticket=None, tests=None, scope=None, review_attempt=None):
         skill = Path(__file__).resolve().parents[1] / "skills" / stage / "SKILL.md"
         if stage == "defect-review":
             skill = Path(__file__).resolve().parents[1] / "references" / "defect-review.md"
@@ -194,7 +234,9 @@ class Engine:
         documents = {name: self.document(run, name) for name in run["artifacts"]}
         return {"instructions": INSTRUCTIONS, "role": role, "method": shared,
                 "objective": run["objective"], "answers": run["answers"], "documents": documents,
+                "ticket_documents": self.ticket_documents(run) if run.get("ticket_artifacts") else [],
                 "source": code, "ticket": ticket, "tests": tests, "criteria_in_scope": scope,
+                "review_attempt": review_attempt,
                 "approved_read_set": run["config"]["read_set"], "approved_write_set": run["config"]["write_set"],
                 "approved_test_ids": sorted(run["config"]["tests"]),
                 "feedback": run["feedback"] if stage == "implement" else [],
@@ -291,6 +333,7 @@ class Engine:
                 acs = criteria(self.document(run, "spec"), set(run["config"]["tests"]))
                 ticket_order(result.get("tickets"), acs, allowed)
                 self.save_document(run, "tickets", {"tickets": result["tickets"]})
+                self.save_ticket_documents(run, result["tickets"])
                 self._mirror_queue(run)
             if run["standalone"]:
                 run["status"] = "completed"
@@ -309,7 +352,9 @@ class Engine:
             self.checkpoint(run, "standalone_review")
             return run
 
-        tickets = self.document(run, "tickets")["tickets"]
+        tickets = self.ticket_documents(run)
+        if tickets != sorted(self.document(run, "tickets")["tickets"], key=lambda item: item["id"]):
+            raise GateError("aggregate and per-ticket canonical artifacts differ")
         order = ticket_order(tickets, acs, allowed)
         pending = [x for x in order if x not in run["done_tickets"]]
         ticket = next((x for x in tickets if pending and x["id"] == pending[0]), None)
@@ -355,25 +400,52 @@ class Engine:
             self.checkpoint(run, "tests_failed")
             raise GateError("verification failed")
         reports = {}
+        evidence_binding = {
+            "source_hash": frozen["hash"], "source_head": frozen["head"],
+            "artifacts": dict(run["artifacts"]), "ticket_artifacts": dict(run["ticket_artifacts"]),
+            "tests_hash": digest(tests), "scope": sorted(scope),
+            "ticket_id": ticket["id"] if ticket else None,
+            "review_kind": "ticket" if ticket else "integrated",
+        }
+        active = run.get("active_review")
+        if active and active.get("binding") != evidence_binding:
+            run["active_review"] = None
+            self.checkpoint(run, "stale_review_invalidated")
+            active = None
+        if not active:
+            run["review_sequence"] = run.get("review_sequence", 0) + 1
+            active = {"sequence": run["review_sequence"], "binding": evidence_binding}
+            active["id"] = digest([run["id"], active["sequence"], evidence_binding])
+            run["active_review"] = active
+            self.checkpoint(run, "review_attempt_started")
         # Sequential fresh contexts are a portable floor. Neither packet
         # contains the other review or the author's private explanation.
         for axis in ("spec-review", "defect-review"):
-            reports[axis] = self.invoke(run, axis, self.packet(run, axis, code=frozen, ticket=ticket, tests=tests, scope=sorted(scope)))
+            review_attempt = {"id": active["id"], "sequence": active["sequence"],
+                              "context_id": digest([active["id"], axis]), "axis": axis,
+                              "binding": evidence_binding}
+            reports[axis] = self.invoke(run, axis, self.packet(run, axis, code=frozen, ticket=ticket,
+                                                               tests=tests, scope=sorted(scope),
+                                                               review_attempt=review_attempt))
         passed = all(validate_review(reports[axis], scope, spec_axis=axis == "spec-review") for axis in reports)
         self.assert_frozen(run, root, frozen)
-        receipt = {"source_hash": frozen["hash"], "artifacts": run["artifacts"], "tests": tests,
-                   "reviews": reports, "models": run["pins"], "scope": sorted(scope)}
+        receipt = {"source_hash": frozen["hash"], "artifacts": dict(run["artifacts"]),
+                   "ticket_artifacts": dict(run["ticket_artifacts"]), "tests": tests,
+                   "reviews": reports, "models": run["pins"], "scope": sorted(scope),
+                   "review_attempt_id": active["id"], "evidence_binding": evidence_binding}
         receipt_hash = digest(receipt)
         atomic_text(self.store.root / run_id / "receipts" / (receipt_hash + ".json"), json.dumps(receipt, ensure_ascii=False, indent=2))
         if not passed:
             run["feedback"] = list(reports.values())
             run["verify_ticket"] = None
+            run["active_review"] = None
             if not ticket:
                 run["done_tickets"] = []
             run["status"] = "ready"
             self.checkpoint(run, "review_failed")
             raise GateError("review has blocking findings or incomplete coverage")
         run["feedback"] = []
+        run["active_review"] = None
         run["last_receipt"] = receipt_hash
         if ticket:
             run["done_tickets"].append(ticket["id"])

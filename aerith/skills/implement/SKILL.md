@@ -20,6 +20,10 @@ pre-edit SHA-256, using only the ticket's exact write set. No tool calls or dire
 writes are permitted. The controller applies proposals, runs isolated tests,
 collects independent reviews and owns completion/commits. Respond to findings by
 fixing their cause; ask when the correct fix needs broader authority or scope.
+Each review attempt must be controller-owned and bound to the exact code, spec,
+ticket, test evidence and scope. A failed review requires a new attempt identity
+after the fix. The final integrated review after all tickets must be a separate
+fresh pass and cannot reuse a prior ticket review or failed review.
 
 Code Review means both spec-review and the independent defect-review role. Same
 vendor is the default, never the same author context. A passed spec review alone

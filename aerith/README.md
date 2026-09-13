@@ -45,7 +45,11 @@ verification. A standalone stage does not invoke preceding stages.
   project locks shared across different state roots, edit journals, source
   hashes, and local isolated branches.
 - Controller-owned tests, acceptance coverage and dependency checks, P0/P1/P2
-  gates, P3 dispositions, and separate ticket/final review packets.
+  gates, P3 dispositions, and separate ticket/final review packets. Every ticket
+  has a canonical hash-bound Markdown file. Each review attempt has a durable
+  controller nonce bound to the exact source, spec, tickets, tests and scope.
+  A failed review cannot be reused as its own re-review, and the integrated
+  review after all tickets is a distinct fresh attempt.
 - A failed ticket has a persistent three-attempt ceiling even if code changes.
   Repeated failures pause. A new budget requires an explicit operator decision;
   this candidate does not yet offer a budget-reset command.
@@ -99,11 +103,15 @@ inject trusted fixture workers and a trusted synthetic verifier; they are not
 proof of live vendor portability or an OS sandbox. No config flag named
 `fixture` bypasses production admission.
 
+The multi-ticket E2E fixture proves sequential tickets, P2 blocking and fresh
+re-review, P3 disposition, final integrated review and a local branch commit.
+It remains synthetic and does not prove a live Sol or other provider worker.
+
 Still required before release: live Claude/Codex/Gemini conformance, actual
 account model availability/attestation, automatic new-run discovery, sandbox
 proof admission, native background scheduler registration and login recovery,
 GitHub parent/subissue relationship integration and a live mirror test,
-canonical per-ticket files, real single-task pilot, and host admission/index
+real single-task pilot, and host admission/index
 activation. These are not inferred from passing unit tests.
 
 Observed host tests now include real Docker denial/descendant-cleanup probes,

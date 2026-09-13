@@ -2,6 +2,16 @@
 
 ## Forward Rules
 
+- A review cache key is not a review lifecycle. Persist a controller-owned
+  attempt identity bound to the exact source, spec, ticket artifacts, test
+  evidence and scope. Clear it after any blocking result so a fix receives a
+  genuinely fresh re-review, and give the post-ticket integrated review its own
+  attempt. Otherwise an unchanged or reverted snapshot can replay an old failed
+  report forever while appearing to have asked an independent reviewer again.
+- A ticket aggregate is not a canonical per-ticket record. Persist one bounded
+  Markdown artifact per stable ticket ID, bind every file hash into run state and
+  receipts, and refuse aggregate/file divergence before implementation or review.
+
 - Preserve exact newline bytes when hashing source packets. Windows text-mode
   reads normalize CRLF and can invalidate an unchanged file's write precondition.
 - Reconcile uncertain remote mutations before retrying them.

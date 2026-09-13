@@ -31,5 +31,6 @@
   "skills/spec-review/SKILL.md",
   "tests/test_controller.py",
   "tests/test_edges.py",
-  "tests/test_provenance.py"
+  "tests/test_provenance.py",
+  "tests/test_workflow_e2e.py"
 ]
