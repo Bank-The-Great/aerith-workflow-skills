@@ -20,6 +20,18 @@
 - Publish only the explicit file manifest. Never include private runtime inputs,
   host settings or proprietary vendor-system prompts.
 - Bind current run data, not just event summaries, into the integrity ledger.
+- Runtime admission must supply the exact already-verified skill/reference bytes
+  to the controller. Reopening a package path while building a provider packet
+  reintroduces a verify-to-use race even when invocation rechecks the manifest.
+- Git is executable code, not a benign file reader. Admit one absolute hashed
+  executable from a directory the active token cannot augment; disable ambient
+  system/global config and hooks; compare raw blobs, create objects without
+  path-aware filters, and prove each committed blob equals the reviewed receipt.
+- A path allowlist does not bind a Windows file identity. Hold non-reparse root
+  ancestry and the opened target through mutation, write through that same
+  handle, and verify the bytes before releasing it. Until safe create/delete
+  primitives are separately reviewed, scope the first release to existing
+  regular tracked UTF-8 files with unchanged modes.
 - A failed ticket needs a persistent attempt cap independent of changing code.
 - Read-only review must not change ticket completion or create delivery commits.
 - A Windows pathname is not a Linux container host-path probe. Establish host
@@ -113,3 +125,10 @@
   Docker client runs away from the project under an explicit empty client config.
   The only Python verification closure is compiled from its already validated
   adapter, process and contract bytes with local imports injected explicitly.
+- 2026-09-14: Sol review found three remaining verify-to-use seams: package
+  resources were reopened for packets, Git was found by name and could invoke
+  clean/process helpers, and approved Windows pathnames were not held across
+  writes. The controller now consumes frozen host-verified resource bytes,
+  admits one hashed non-augmentable Git executable, materializes exact blobs in
+  a no-checkout worktree, constructs commits with plumbing and rechecks every
+  blob, and performs existing-file updates through a locked verified handle.

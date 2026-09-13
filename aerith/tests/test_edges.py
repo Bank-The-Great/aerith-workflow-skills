@@ -401,7 +401,8 @@ class ProviderEdges(unittest.TestCase):
                             "executable_sha256": executable_sha256, "runtime_files": {}, "evidence_files": {sha: str(evidence)},
                             "cases": {x: {"expected": True, "observed": True, "passed": True, "evidence_sha256": sha}
                                       for x in ("exact_source_set", "outside_read_denied", "outside_write_denied", "network_denied", "child_cleanup")}}
-            with patch.dict("project_creator.providers._HOST_CAPABILITIES", {digest(cfg): "verification"}):
+            with patch.dict("project_creator.providers._HOST_CAPABILITIES", {digest(cfg): "verification"}), \
+                    patch("project_creator.providers.assert_non_augmentable_directory"):
                 with self.assertRaisesRegex(GateError, "runtime closure file missing"):
                     validate_capability(cfg, "verification")
             evidence.write_text("fabricated")
@@ -409,7 +410,8 @@ class ProviderEdges(unittest.TestCase):
             cfg["proof"]["evidence_files"] = {fake_hash: str(evidence)}
             for case in cfg["proof"]["cases"].values():
                 case["evidence_sha256"] = fake_hash
-            with patch.dict("project_creator.providers._HOST_CAPABILITIES", {digest(cfg): "verification"}):
+            with patch.dict("project_creator.providers._HOST_CAPABILITIES", {digest(cfg): "verification"}), \
+                    patch("project_creator.providers.assert_non_augmentable_directory"):
                 with self.assertRaisesRegex(GateError, "does not substantiate"):
                     validate_capability(cfg, "verification")
 

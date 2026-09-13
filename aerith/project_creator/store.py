@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import json
 import os
 import sqlite3
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .contracts import GateError, digest
+from .processes import _same_windows_path, _windows_final_path, stable_directory
 
 
 def now():
@@ -140,9 +143,42 @@ def exclusive(path: Path):
 
 def atomic_text(path: Path, text: str):
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(path.name + ".pending")
-    with open(temp, "w", encoding="utf-8", newline="\n") as stream:
-        stream.write(text)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temp, path)
+    with stable_directory(path.parent.resolve()):
+        raw = text.encode("utf-8")
+        if os.name == "nt":
+            import msvcrt
+            from ctypes import wintypes
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                           ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                           wintypes.HANDLE]
+            kernel.CreateFileW.restype = wintypes.HANDLE
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            invalid = wintypes.HANDLE(-1).value
+            handle = kernel.CreateFileW(str(path), 0x80000000 | 0x40000000,
+                                        0x00000001, None, 4, 0x80 | 0x00200000, None)
+            if handle == invalid:
+                raise GateError("could not open stable state file")
+            class AttributeTag(ctypes.Structure):
+                _fields_ = [("FileAttributes", wintypes.DWORD), ("ReparseTag", wintypes.DWORD)]
+            tag = AttributeTag()
+            if (not kernel.GetFileInformationByHandleEx(handle, 9, ctypes.byref(tag), ctypes.sizeof(tag))
+                    or tag.FileAttributes & 0x400 or tag.FileAttributes & 0x10
+                    or not _same_windows_path(_windows_final_path(handle), path)):
+                kernel.CloseHandle(handle)
+                raise GateError("state target is not a regular non-reparse file")
+            descriptor = msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_BINARY)
+        else:
+            descriptor = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                os.close(descriptor)
+                raise GateError("state target is not a regular file")
+        with os.fdopen(descriptor, "r+b", closefd=True) as stream:
+            stream.seek(0)
+            stream.write(raw)
+            stream.truncate()
+            stream.flush()
+            os.fsync(stream.fileno())
+            stream.seek(0)
+            if stream.read() != raw:
+                raise GateError("stable state write could not be verified")

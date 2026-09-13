@@ -116,6 +116,10 @@ A run configuration supplies exact `read_set`, `write_set`, approved `tests`
 verified `verification_sandbox`. Optional `input_artifacts` support standalone
 later stages; optional `github` contains a private repository and native CLI
 path, never a token. Do not place these host configuration files in this fork.
+The first safety release requires every scoped source to be an existing regular
+tracked UTF-8 file whose raw bytes equal the pinned Git blob. It does not create,
+delete, rename, link or change modes. Git is an absolute host-pinned executable;
+commit objects are built from reviewed bytes without clean/process filters.
 An explicit containment probe produces evidence only. It never registers a
 capability in the trusted host policy or admits a skill automatically.
 

@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,15 +16,22 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from project_creator.contracts import (GateError, criteria, digest, safe_relative, ticket_order, validate_review)
-from project_creator.engine import Engine, start
+from project_creator.engine import Engine, RESOURCE_FILES, configure_runtime_resources, start
 from project_creator.models import catalog_pin, model_for, refresh_catalog
 from project_creator.store import Store, exclusive
-from project_creator.workspace import git, propose_edits, reconcile_edits, snapshot, project_lock
+from project_creator.workspace import (configure_git, git, propose_edits, reconcile_edits,
+                                       snapshot, project_lock, _overwrite_existing)
 from project_creator.providers import attest_model, validate_capability
 from project_creator.admission import verify_package, CORE_SKILLS, admission_stopped
 from project_creator.processes import execute, reviewed_files
 from project_creator.mirror import sync, marker
 from project_creator.cli import main
+
+PACKAGE = Path(__file__).resolve().parents[1]
+GIT_EXE = Path(shutil.which("git")).resolve()
+configure_git({"executable": str(GIT_EXE), "sha256": digest(GIT_EXE.read_bytes())})
+configure_runtime_resources({name: (PACKAGE / name).read_bytes()
+                             for name in RESOURCE_FILES.values()})
 
 
 def spec():
@@ -96,8 +104,44 @@ class Harness(unittest.TestCase):
         self.assertEqual(initial, (self.project / "calc.py").read_text())
         self.assertNotEqual(result["base"], result["delivery_commit"])
         self.assertEqual(git(Path(result["worktree"]), "status", "--porcelain"), "")
+        committed = git(Path(result["worktree"]), "cat-file", "blob",
+                        result["delivery_commit"] + ":calc.py", strip=False)
+        self.assertEqual(committed, "def increment(x):\n    return x + 1\n")
         self.assertEqual([x[0] for x in self.log], ["grill-with-docs", "to-spec", "to-tickets", "implement", "spec-review", "defect-review", "spec-review", "defect-review"])
         self.assertTrue(self.store.verify())
+
+    def test_packets_use_frozen_reviewed_resources_without_disk_reopen(self):
+        run = self.create()
+        with patch.object(Path, "read_text", side_effect=AssertionError("package resource reopened")):
+            packet = self.engine.packet(run, "grill-with-docs")
+        self.assertIn("Grill", packet["role"])
+        self.assertIn("engineering method", packet["method"])
+
+    def test_new_scoped_file_is_refused_before_any_model_call(self):
+        config = copy.deepcopy(self.config)
+        config["read_set"].append("new.py")
+        config["write_set"].append("new.py")
+        with self.assertRaisesRegex(GateError, "existing tracked files only"):
+            start(self.store, self.project, "Create a file", config, catalog(), "codex")
+        self.assertEqual(self.log, [])
+
+    def test_cross_scope_case_collision_is_refused(self):
+        config = copy.deepcopy(self.config)
+        config["read_set"] = ["calc.py"]
+        config["write_set"] = ["CALC.py"]
+        with self.assertRaisesRegex(GateError, "case collision"):
+            start(self.store, self.project, "Edit one file", config, catalog(), "codex")
+
+    def test_required_clean_filter_is_never_invoked_by_controller(self):
+        (self.project / ".gitattributes").write_text("calc.py filter=hostile\n", encoding="utf-8")
+        git(self.project, "add", ".gitattributes")
+        git(self.project, "commit", "-qm", "add hostile attributes fixture")
+        git(self.project, "config", "filter.hostile.clean", "false")
+        git(self.project, "config", "filter.hostile.smudge", "false")
+        git(self.project, "config", "filter.hostile.required", "true")
+        run = self.create()
+        result = self.engine.run(run["id"], max_steps=12)
+        self.assertEqual(result["status"], "completed", result.get("last_error"))
 
     def test_model_roles_and_cross_vendor_review(self):
         run = self.create(spec_vendor="claude")
@@ -146,7 +190,7 @@ class Harness(unittest.TestCase):
 
     def test_dirty_selected_source_not_overwritten(self):
         (self.project / "calc.py").write_text("user work", encoding="utf-8")
-        with self.assertRaisesRegex(GateError, "dirty"):
+        with self.assertRaisesRegex(GateError, "differs"):
             self.create()
         self.assertEqual((self.project / "calc.py").read_text(), "user work")
 
@@ -268,9 +312,33 @@ class Harness(unittest.TestCase):
 
 class Contracts(unittest.TestCase):
     def test_dangerous_paths(self):
-        for value in ("../file", "/file", "C:/file", "x\\y", ".git/config", "a/.env", "a/key.pem", "foo/CON.txt", "a/../b", "a/./b", "a/x."):
+        for value in ("../file", "/file", "C:/file", "x\\y", ".git/config", "a/.env", "a/key.pem", "foo/CON.txt", "a/../b", "a/./b", "a/x.", "a/line\nbreak"):
             with self.subTest(value=value), self.assertRaises(GateError):
                 safe_relative(value)
+
+    @unittest.skipUnless(os.name == "nt", "Windows handle-sharing invariant")
+    def test_handle_bound_edit_blocks_path_replacement_during_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "one.txt"
+            moved = root / "moved.txt"
+            path.write_text("before", encoding="utf-8")
+            real_fsync = os.fsync
+            attempts = []
+
+            def attempt_swap(descriptor):
+                try:
+                    path.replace(moved)
+                    attempts.append("replaced")
+                except OSError:
+                    attempts.append("blocked")
+                real_fsync(descriptor)
+
+            with patch("project_creator.workspace.os.fsync", side_effect=attempt_swap):
+                _overwrite_existing(path, digest("before"), "after")
+            self.assertEqual(attempts, ["blocked"])
+            self.assertEqual(path.read_text(encoding="utf-8"), "after")
+            self.assertFalse(moved.exists())
 
     def test_ticket_coverage_cycle_and_unknown(self):
         acs = criteria(spec(), {"unit"})

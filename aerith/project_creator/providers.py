@@ -11,7 +11,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from .contracts import GateError, digest, safe_text
-from .processes import execute, minimal_environment
+from .processes import assert_non_augmentable_directory, execute, minimal_environment
 from .output_schemas import schema_for, validate_output
 from .provenance import parse_codex_data_only
 
@@ -156,6 +156,7 @@ def validate_capability(config: dict, purpose: str, *, environment=None):
     if purpose == "provider" and dependencies:
         raise GateError("data-only provider must be one reviewed native executable")
     if config.get("kind") == "docker":
+        assert_non_augmentable_directory(executable.parent)
         package = Path(__file__).resolve().parent
         required_runtime = {package / name for name in ("contracts.py", "processes.py", "docker_sandbox.py")}
         for runtime in required_runtime:

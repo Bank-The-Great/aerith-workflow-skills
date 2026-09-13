@@ -36,6 +36,7 @@ def safe_relative(raw: str) -> str:
     nonempty(raw, "relative path")
     p = PurePosixPath(raw)
     if ("\\" in raw or ":" in raw or p.is_absolute() or str(p) != raw
+            or any(ord(character) < 32 or ord(character) == 127 for character in raw)
             or any(x in {"", ".", ".."} or x.casefold() in PROTECTED or SECRET_NAME.search(x) for x in p.parts)
             or any(x.endswith((".", " ")) for x in p.parts)
             or any(re.fullmatch(r"(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?", x, re.I) for x in p.parts)):

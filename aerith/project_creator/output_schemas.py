@@ -74,7 +74,7 @@ SCHEMAS = {
     "implement": _object({
         "changes": _array(_object({
             "path": STRING,
-            "expected_sha256": {"anyOf": [STRING, {"type": "null"}]},
+            "expected_sha256": STRING,
             "content": STRING,
         })),
         "summary": STRING,

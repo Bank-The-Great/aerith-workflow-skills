@@ -20,6 +20,9 @@ pre-edit SHA-256, using only the ticket's exact write set. No tool calls or dire
 writes are permitted. The controller applies proposals, runs isolated tests,
 collects independent reviews and owns completion/commits. Respond to findings by
 fixing their cause; ask when the correct fix needs broader authority or scope.
+The first safety release updates existing tracked files only; creating, deleting,
+renaming, linking or changing file modes requires a future separately reviewed
+capability rather than a null pre-edit hash.
 Each review attempt must be controller-owned and bound to the exact code, spec,
 ticket, test evidence and scope. A failed review requires a new attempt identity
 after the fix. The final integrated review after all tickets must be a separate

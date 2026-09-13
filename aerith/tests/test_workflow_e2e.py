@@ -1,6 +1,7 @@
 """Synthetic workflow E2E. This is not live-provider or host-admission proof."""
 import copy
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -10,9 +11,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from project_creator.contracts import digest, parse_artifact
-from project_creator.engine import Engine, start
+from project_creator.engine import Engine, RESOURCE_FILES, configure_runtime_resources, start
 from project_creator.store import Store
-from project_creator.workspace import git
+from project_creator.workspace import configure_git, git
+
+PACKAGE = Path(__file__).resolve().parents[1]
+GIT_EXE = Path(shutil.which("git")).resolve()
+configure_git({"executable": str(GIT_EXE), "sha256": digest(GIT_EXE.read_bytes())})
+configure_runtime_resources({name: (PACKAGE / name).read_bytes()
+                             for name in RESOURCE_FILES.values()})
 
 
 def catalog():
@@ -112,7 +119,8 @@ class WorkflowE2E(unittest.TestCase):
         git(self.project, "config", "user.name", "Fixture")
         git(self.project, "config", "user.email", "fixture@example.invalid")
         (self.project / "calc.py").write_text("def increment(x):\n    return x\n", encoding="utf-8")
-        git(self.project, "add", "calc.py")
+        (self.project / "report.py").write_text("", encoding="utf-8")
+        git(self.project, "add", "calc.py", "report.py")
         git(self.project, "commit", "-qm", "fixture base")
         self.store = Store(self.root / "state", create=True)
         self.config = {"read_set": ["calc.py", "report.py"],

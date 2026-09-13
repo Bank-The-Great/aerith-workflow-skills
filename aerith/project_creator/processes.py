@@ -97,6 +97,65 @@ def _valid_sha256(value) -> bool:
             and all(character in "0123456789abcdef" for character in value))
 
 
+def _windows_final_path(handle) -> Path:
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetFinalPathNameByHandleW.argtypes = [wintypes.HANDLE, wintypes.LPWSTR,
+                                                wintypes.DWORD, wintypes.DWORD]
+    kernel.GetFinalPathNameByHandleW.restype = wintypes.DWORD
+    needed = kernel.GetFinalPathNameByHandleW(handle, None, 0, 0)
+    if not needed:
+        raise GateError("could not resolve opened Windows path identity")
+    buffer = ctypes.create_unicode_buffer(needed + 1)
+    length = kernel.GetFinalPathNameByHandleW(handle, buffer, len(buffer), 0)
+    if not length or length >= len(buffer):
+        raise GateError("could not resolve opened Windows path identity")
+    value = buffer.value
+    if value.startswith("\\\\?\\UNC\\"):
+        value = "\\\\" + value[8:]
+    elif value.startswith("\\\\?\\"):
+        value = value[4:]
+    return Path(value)
+
+
+def _same_windows_path(left: Path, right: Path) -> bool:
+    return os.path.normcase(os.path.abspath(str(left))) == os.path.normcase(os.path.abspath(str(right)))
+
+
+def assert_non_augmentable_directory(path: Path):
+    """Prove that the active Windows token cannot add/replace loader inputs."""
+    if os.name != "nt":
+        raise GateError("non-augmentable executable directories are unsupported on this host")
+    import ctypes
+    from ctypes import wintypes
+    path = Path(path)
+    if not path.is_absolute() or not path.is_dir() or not _reparse_free(path):
+        raise GateError("executable directory is not a stable absolute directory")
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                   ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                   wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    invalid = wintypes.HANDLE(-1).value
+    flags = 0x02000000 | 0x00200000  # BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+    share_all = 0x00000001 | 0x00000002 | 0x00000004
+    # FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_DELETE_CHILD, DELETE,
+    # WRITE_DAC and WRITE_OWNER are tested independently. A combined request
+    # could hide one granted right behind a different denied right.
+    for right in (0x00000002, 0x00000004, 0x00000040,
+                  0x00010000, 0x00040000, 0x00080000):
+        ctypes.set_last_error(0)
+        handle = kernel.CreateFileW(str(path), right, share_all, None, 3, flags, None)
+        if handle != invalid:
+            kernel.CloseHandle(handle)
+            raise GateError("executable directory is augmentable by the active token")
+        if ctypes.get_last_error() != 5:  # ERROR_ACCESS_DENIED
+            raise GateError("executable-directory rights could not be verified")
+    return True
+
+
 class _WindowsPathLock:
     """Own all handles that make one reviewed pathname stable until close."""
 
@@ -150,12 +209,16 @@ def _locked_windows_reviewed_path(path: Path, expected_sha256: str):
                 raise GateError("could not lock reviewed path ancestry")
             handles.append(handle)
             attributes = ctypes.windll.kernel32.GetFileAttributesW(str(directory))
-            if attributes == 0xFFFFFFFF or attributes & 0x400:
+            if (attributes == 0xFFFFFFFF or attributes & 0x400
+                    or not _same_windows_path(_windows_final_path(handle), directory)):
                 raise GateError("reviewed path ancestry contains a reparse point")
         handle = kernel.CreateFileW(str(path), 0x80000000, share_read, None,
                                     open_existing, 0x80 | open_reparse_point, None)
         if handle == invalid:
             raise GateError("could not lock reviewed file")
+        if not _same_windows_path(_windows_final_path(handle), path):
+            kernel.CloseHandle(handle)
+            raise GateError("reviewed file path identity changed")
         descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY)
         stream = os.fdopen(descriptor, "rb", closefd=True)
         observed = hashlib.sha256(stream.read()).hexdigest()
@@ -203,19 +266,7 @@ def _locked_windows_system_directory():
     if any((path / name).exists() for name in ambient_names):
             raise GateError("admitted system directory contains ambient configuration")
 
-    # Directory-specific FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY and
-    # FILE_DELETE_CHILD, plus the standard delete/DACL/owner rights.  Probe each
-    # independently: a combined request could hide one granted right behind a
-    # different denied right.  No filesystem mutation is performed.
-    share_all = 0x00000001 | 0x00000002 | 0x00000004
-    dangerous_rights = (0x00000002, 0x00000004, 0x00000040, 0x00010000, 0x00040000, 0x00080000)
-    for right in dangerous_rights:
-        handle = kernel.CreateFileW(str(path), right, share_all, None, 3, flags, None)
-        if handle != invalid:
-            kernel.CloseHandle(handle)
-            raise GateError("admitted system directory is writable by the active token")
-        if ctypes.get_last_error() != 5:  # ERROR_ACCESS_DENIED is the only safe result.
-            raise GateError("admitted system-directory rights could not be verified")
+    assert_non_augmentable_directory(path)
 
     handles = []
     try:
@@ -276,6 +327,46 @@ def reviewed_files(expected_hashes):
     finally:
         for lock in reversed(locks):
             lock.close()
+
+
+@contextmanager
+def stable_directory(path: Path):
+    """Hold a non-reparse directory identity and all mutable ancestors stable."""
+    path = Path(path)
+    if not path.is_absolute() or not path.is_dir() or not _reparse_free(path):
+        raise GateError("stable directory must be an existing absolute non-reparse path")
+    if os.name != "nt":
+        yield path
+        return
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                   ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                   wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    invalid = wintypes.HANDLE(-1).value
+    flags = 0x02000000 | 0x00200000
+    handles = []
+    try:
+        parents = list(path.parents)
+        for directory in [*reversed(parents[:-1]), path]:
+            handle = kernel.CreateFileW(str(directory), 0x80000000, 0x00000001,
+                                        None, 3, flags, None)
+            if handle == invalid:
+                raise GateError("could not lock stable directory ancestry")
+            handles.append(handle)
+            attributes = kernel.GetFileAttributesW(str(directory))
+            if (attributes == 0xFFFFFFFF or attributes & 0x400
+                    or not _same_windows_path(_windows_final_path(handle), directory)):
+                raise GateError("stable directory ancestry contains a reparse point")
+        if not path.is_dir():
+            raise GateError("stable directory identity changed while locking")
+        yield path
+    finally:
+        for handle in reversed(handles):
+            kernel.CloseHandle(handle)
 
 
 def execute(argv: list[str], *, cwd: Path, stdin="", timeout=600, cancelled=lambda: False,
