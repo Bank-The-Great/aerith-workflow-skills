@@ -13,7 +13,8 @@ from .admission import verify_package, admission_stopped
 from .providers import CLIProvider, VerificationRunner
 from .processes import stable_directory
 from .store import Store, atomic_text, exclusive, now
-from .workspace import (audit_scope, commit_delivery, git, make_worktree, propose_edits,
+from .workspace import (audit_scope, commit_delivery, directory_identity,
+                        discover_repository, make_worktree, propose_edits,
                         reconcile_edits, snapshot, project_lock, source_scope_clean)
 
 INSTRUCTIONS = """You are a scoped worker in a deterministic project controller.
@@ -93,13 +94,15 @@ def start(store: Store, project: Path, objective: str, config: dict, catalog: di
         raise GateError("objective required")
     if standalone and standalone not in STAGES:
         raise GateError("unknown standalone stage")
-    project = project.resolve()
+    project = Path(os.path.abspath(str(project)))
     with stable_directory(project):
-        base = git(project, "rev-parse", "HEAD")
+        repository = discover_repository(project)
+        git_dir = Path(repository["git_dir"])
+        base = repository["base"]
         # Exact raw bytes are compared with exact blobs. No clean/process
         # filter, hook, pager, editor or repository helper is invoked.
         scoped = list(set(config["read_set"] + config["write_set"]))
-        source_scope_clean(project, base, scoped)
+        source_scope_clean(project, git_dir, base, scoped)
     pins = {name: catalog_pin(catalog, name) for name in {vendor, spec_vendor or vendor}}
     for name in catalog.get("project_creator", {}).get("vendors", {}):
         if name not in pins:
@@ -108,10 +111,13 @@ def start(store: Store, project: Path, objective: str, config: dict, catalog: di
             except GateError:
                 pass  # Never selected implicitly; unavailable for later handoff.
     rid = "pc-" + uuid.uuid4().hex[:16]
-    run = {"id": rid, "project": str(project), "objective": objective, "config": config,
+    run = {"id": rid, "project": str(project), "git_dir": str(git_dir),
+           "git_dir_identity": repository["git_dir_identity"],
+           "objective": objective, "config": config,
            "config_hash": digest(config), "pins": pins, "vendor": vendor, "spec_vendor": spec_vendor,
            "standalone": standalone, "stage": standalone or STAGES[0], "status": "ready", "base": base,
-           "branch": "project-creator/" + rid, "worktree": str(store.root / rid / "worktree"),
+           "branch": "project-creator/" + rid,
+           "worktree": str(store.root / "worktrees" / rid),
            "answers": [], "questions": [], "artifacts": {}, "done_tickets": [], "feedback": [],
            "ticket_artifacts": {}, "review_sequence": 0, "active_review": None,
            "failure_counts": {}, "repair_attempts": {}, "created_at": now(), "revision": 0, "mirror_status": "not_configured"}
@@ -153,6 +159,13 @@ class Engine:
         return VerificationRunner(run["config"].get("verification_sandbox", {}), run["config"]["tests"],
                                   read_set=list(set(run["config"]["read_set"] + run["config"]["write_set"])),
                                   cancelled=lambda: self.cancelled(run["id"]))
+
+    def _git_dir(self, run):
+        git_dir = Path(run["git_dir"])
+        expected = run.get("git_dir_identity")
+        if not expected or directory_identity(git_dir) != expected:
+            raise GateError("pinned Git metadata directory identity changed")
+        return git_dir
 
     def cancelled(self, run_id, *, manual_revision=None):
         run = self.store.get(run_id)
@@ -220,8 +233,9 @@ class Engine:
         if run.get("ticket_artifacts"):
             self.ticket_documents(run)
         read_set = list(set(run["config"]["read_set"] + run["config"]["write_set"]))
-        audit_scope(root, run["base"], run["config"]["write_set"], read_set)
-        current = snapshot(root, read_set)
+        git_dir = self._git_dir(run)
+        audit_scope(root, git_dir, run["base"], run["config"]["write_set"], read_set)
+        current = snapshot(root, read_set, git_dir, run["branch"])
         if current["hash"] != frozen["hash"] or current["head"] != frozen["head"]:
             raise GateError("source changed after verification; old evidence refused")
 
@@ -229,8 +243,12 @@ class Engine:
         """Read-only review request. Never author, complete tickets, or commit."""
         run = self.store.get(run_id)
         project = Path(run["project"])
+        git_dir = Path(run["git_dir"])
         root = Path(run["worktree"])
-        with stable_directory(project), exclusive(project_lock(project)), stable_directory(root.resolve()):
+        with (stable_directory(project), stable_directory(git_dir),
+              exclusive(project_lock(git_dir)), stable_directory(root)):
+            if directory_identity(git_dir) != run.get("git_dir_identity"):
+                raise GateError("pinned Git metadata directory identity changed")
             self.store.verify()
             run = self.store.get(run_id)
             if run["status"] in {"ready", "running", "cancelled"}:
@@ -241,7 +259,8 @@ class Engine:
                 run["spec_vendor"] = spec_vendor  # This invocation only.
             run["_manual_revision"] = run["revision"]
             acs = criteria(self.document(run, "spec"), set(run["config"]["tests"]))
-            code = snapshot(root, list(set(run["config"]["read_set"] + run["config"]["write_set"])))
+            code = snapshot(root, list(set(run["config"]["read_set"] + run["config"]["write_set"])),
+                            git_dir, run["branch"])
             reports = {}
             # No test execution in a read-only request: explicit limitation.
             for axis in ("spec-review", "defect-review"):
@@ -250,7 +269,7 @@ class Engine:
                 reports[axis] = self.invoke(run, axis, packet)
             for name in run["artifacts"]:
                 self.document(run, name)
-            if snapshot(root, list(code["files"]))["hash"] != code["hash"]:
+            if snapshot(root, list(code["files"]), git_dir, run["branch"])["hash"] != code["hash"]:
                 raise GateError("source changed during read-only review")
             report = {"source_hash": code["hash"], "artifacts": run["artifacts"], "reviews": reports,
                       "review_passed": all(validate_review(reports[a], set(acs), spec_axis=a == "spec-review") for a in reports),
@@ -342,11 +361,12 @@ class Engine:
             raise GateError("run configuration changed")
         stage = run["stage"]
         root = Path(run["worktree"])
+        git_dir = self._git_dir(run)
         read_set = list(set(run["config"]["read_set"] + run["config"]["write_set"]))
-        make_worktree(Path(run["project"]), root, run["branch"], run["base"], read_set)
+        make_worktree(git_dir, root, run["branch"], run["base"], read_set)
         allowed = run["config"]["write_set"]
-        audit_scope(root, run["base"], allowed, read_set)
-        code = snapshot(root, read_set)
+        audit_scope(root, git_dir, run["base"], allowed, read_set)
+        code = snapshot(root, read_set, git_dir, run["branch"])
         run["status"] = "running"
         self.checkpoint(run, "stage_start")
         if stage in STAGES[:3]:
@@ -420,14 +440,14 @@ class Engine:
             run["pending_edit"] = None
             run["verify_ticket"] = ticket["id"]
             self.checkpoint(run, "edits_applied")
-        audit_scope(root, run["base"], allowed, read_set)
-        frozen = snapshot(root, read_set)
+        audit_scope(root, git_dir, run["base"], allowed, read_set)
+        frozen = snapshot(root, read_set, git_dir, run["branch"])
         tests = self.verifier_factory(run).run(
             [test for cid in scope for test in acs[cid]["test_ids"]], root,
             expected_files=frozen["file_sha256"])
         if {x["test_id"] for x in tests} != {test for cid in scope for test in acs[cid]["test_ids"]}:
             raise GateError("verification runner omitted required tests")
-        if snapshot(root, read_set)["hash"] != frozen["hash"]:
+        if snapshot(root, read_set, git_dir, run["branch"])["hash"] != frozen["hash"]:
             raise GateError("verification modified scoped source")
         if any(x["exit_code"] != 0 for x in tests):
             run["feedback"] = [{"tests": tests}]
@@ -490,9 +510,10 @@ class Engine:
         else:
             self.assert_frozen(run, root, frozen)
             run["delivery_commit"] = commit_delivery(
-                root, run["base"], allowed, read_set, run_id, receipt_hash,
+                root, git_dir, run["branch"], run["base"], allowed, read_set,
+                run_id, receipt_hash,
                 frozen["file_sha256"])
-            if snapshot(root, read_set)["hash"] != frozen["hash"]:
+            if snapshot(root, read_set, git_dir, run["branch"])["hash"] != frozen["hash"]:
                 raise GateError("committed source differs from verified source")
             run["status"] = "completed"
         self._mirror_queue(run)
@@ -502,10 +523,14 @@ class Engine:
     def run(self, run_id, *, max_steps=None):
         run = self.store.get(run_id)
         project = Path(run["project"])
+        git_dir = Path(run["git_dir"])
         read_set = list(set(run["config"]["read_set"] + run["config"]["write_set"]))
-        with stable_directory(project), exclusive(project_lock(project)):
-            make_worktree(project, Path(run["worktree"]), run["branch"], run["base"], read_set)
-            with stable_directory(Path(run["worktree"]).resolve()):
+        with (stable_directory(project), stable_directory(git_dir),
+              exclusive(project_lock(git_dir))):
+            if directory_identity(git_dir) != run.get("git_dir_identity"):
+                raise GateError("pinned Git metadata directory identity changed")
+            make_worktree(git_dir, Path(run["worktree"]), run["branch"], run["base"], read_set)
+            with stable_directory(Path(run["worktree"])):
                 self.store.verify()
                 steps = 0
                 while max_steps is None or steps < max_steps:
@@ -521,7 +546,7 @@ class Engine:
                         reason = str(exc) if isinstance(exc, GateError) else type(exc).__name__
                         root = Path(run["worktree"])
                         try:
-                            state_hash = snapshot(root, read_set)["hash"]
+                            state_hash = snapshot(root, read_set, git_dir, run["branch"])["hash"]
                         except (GateError, OSError):
                             state_hash = "unavailable"
                         fingerprint = digest([run["stage"], reason, state_hash])

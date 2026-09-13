@@ -102,7 +102,8 @@ def validate_capability(config: dict, purpose: str, *, environment=None):
     if _HOST_CAPABILITIES.get(digest(config)) != purpose:
         raise GateError("capability is not pinned by the trusted host admission registry")
     if purpose == "provider" and (config.get("output") not in _ADMITTED_PROVIDER_OUTPUTS
-                                  or config.get("filesystem_scope") != "codex-home-auth-only"):
+                                  or config.get("filesystem_scope") != "codex-home-auth-only"
+                                  or config.get("loader_policy") != "pe-dependent-load-system32"):
         raise GateError("provider is not an admitted data-only worker")
     proof = config.get("proof", {})
     if purpose == "provider" and proof.get("environment_hash") != digest(provider_environment(config) if environment is None else environment):
@@ -117,7 +118,12 @@ def validate_capability(config: dict, purpose: str, *, environment=None):
             raise ValueError()
     except (ValueError, KeyError, TypeError) as exc:
         raise GateError(f"{purpose} containment proof expired or absent") from exc
-    required = {"exact_source_set", "outside_read_denied", "outside_write_denied", "network_denied", "child_cleanup"} if purpose == "verification" else {"fresh_context", "tools_disabled", "ambient_disabled", "child_cleanup", "model_attestation", "subscription_auth_only"}
+    required = ({"exact_source_set", "outside_read_denied", "outside_write_denied",
+                 "network_denied", "child_cleanup"} if purpose == "verification" else
+                {"fresh_context", "tools_disabled", "ambient_disabled", "child_cleanup",
+                 "model_attestation", "subscription_auth_only",
+                 "dependent_load_flags_system32", "delay_imports_absent",
+                 "imports_allowlisted"})
     cases = proof.get("cases", {})
     if not all(isinstance(cases.get(key), dict) and cases[key].get("passed") is True
                and cases[key].get("expected") == cases[key].get("observed")
@@ -137,9 +143,12 @@ def validate_capability(config: dict, purpose: str, *, environment=None):
         try:
             measured = json.loads(raw)
             measured_at = measured.get("checked_at", measured.get("at")) if isinstance(measured, dict) else None
+            measured_case = measured.get("cases", {}).get(case) if isinstance(measured, dict) else None
             valid = (isinstance(measured, dict) and measured.get("schema_version") == 1
                      and measured.get("purpose") == purpose and measured.get("configuration_hash") == expected
-                     and isinstance(measured.get("cases"), dict) and measured["cases"].get(case) is True
+                     and isinstance(measured_case, dict) and measured_case.get("passed") is True
+                     and isinstance(measured_case.get("measurement"), dict)
+                     and bool(measured_case["measurement"])
                      and measured.get("probe_harness_sha256") == proof.get("probe_harness_sha256")
                      and bool(measured.get("probe_harness_sha256"))
                      and measured_at == proof.get("checked_at")
@@ -256,7 +265,8 @@ class CLIProvider:
 
     def invoke(self, stage: str, model: str, packet: dict, directory: Path) -> dict:
         if (self.name != "codex" or self.config.get("output") not in _ADMITTED_PROVIDER_OUTPUTS
-                or self.config.get("filesystem_scope") != "codex-home-auth-only"):
+                or self.config.get("filesystem_scope") != "codex-home-auth-only"
+                or self.config.get("loader_policy") != "pe-dependent-load-system32"):
             raise GateError("only a reviewed data-only provider worker may be launched")
         if self.config.get("auth_mode") != "codex-subscription":
             raise GateError("data-only provider requires subscription-only authentication")

@@ -1,7 +1,7 @@
 """Synthetic workflow E2E. This is not live-provider or host-admission proof."""
 import copy
 import json
-import shutil
+import os
 import subprocess
 import sys
 import tempfile
@@ -16,7 +16,8 @@ from project_creator.store import Store
 from project_creator.workspace import configure_git, git
 
 PACKAGE = Path(__file__).resolve().parents[1]
-GIT_EXE = Path(shutil.which("git")).resolve()
+GIT_EXE = Path(os.environ.get(
+    "PROJECT_CREATOR_TEST_GIT", r"C:\Program Files\Git\mingw64\bin\git.exe"))
 configure_git({"executable": str(GIT_EXE), "sha256": digest(GIT_EXE.read_bytes())})
 configure_runtime_resources({name: (PACKAGE / name).read_bytes()
                              for name in RESOURCE_FILES.values()})
@@ -115,7 +116,7 @@ class WorkflowE2E(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.project = self.root / "source"
         self.project.mkdir()
-        subprocess.run(["git", "init", "-q", str(self.project)], check=True)
+        subprocess.run([str(GIT_EXE), "init", "-q", str(self.project)], check=True)
         git(self.project, "config", "user.name", "Fixture")
         git(self.project, "config", "user.email", "fixture@example.invalid")
         (self.project / "calc.py").write_text("def increment(x):\n    return x\n", encoding="utf-8")

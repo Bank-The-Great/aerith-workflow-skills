@@ -110,6 +110,7 @@ class ProviderEdges(unittest.TestCase):
     def test_data_only_route_rejects_vendor_alias_and_malformed_native_command(self):
         base = {"output": "codex-data-only", "auth_mode": "codex-subscription",
                 "filesystem_scope": "codex-home-auth-only",
+                "loader_policy": "pe-dependent-load-system32",
                 "attestation": {"mode": "provider-response-header"},
                 "argv": [sys.executable, "--model", "{model}"]}
         variants = [
@@ -128,6 +129,7 @@ class ProviderEdges(unittest.TestCase):
     def test_provider_uses_the_same_environment_snapshot_it_validated(self):
         config = {"output": "codex-data-only", "auth_mode": "codex-subscription",
                   "filesystem_scope": "codex-home-auth-only",
+                  "loader_policy": "pe-dependent-load-system32",
                   "attestation": {"mode": "provider-response-header"},
                   "argv": [sys.executable, "--model", "{model}"]}
         original_path = os.environ.get("PATH")
@@ -174,6 +176,7 @@ class ProviderEdges(unittest.TestCase):
         ))
         config = {"output": "codex-data-only", "auth_mode": "codex-subscription",
                   "filesystem_scope": "codex-home-auth-only",
+                  "loader_policy": "pe-dependent-load-system32",
                   "attestation": {"mode": "provider-response-header"},
                   "argv": [sys.executable, "--model", "{model}"],
                   "proof": {"executable_sha256": "a" * 64}}
@@ -202,6 +205,7 @@ class ProviderEdges(unittest.TestCase):
         ))
         config = {"output": "codex-data-only", "auth_mode": "codex-subscription",
                   "filesystem_scope": "codex-home-auth-only",
+                  "loader_policy": "pe-dependent-load-system32",
                   "attestation": {"mode": "provider-response-header"},
                   "argv": [sys.executable, "--model", "{model}"]}
         with patch("project_creator.providers.validate_capability"), \
@@ -286,6 +290,7 @@ class ProviderEdges(unittest.TestCase):
                  "runtime_files": {}}
         config = {"output": "codex-data-only", "auth_mode": "codex-subscription",
                   "filesystem_scope": "codex-home-auth-only",
+                  "loader_policy": "pe-dependent-load-system32",
                   "attestation": {"mode": "provider-response-header"},
                   "argv": [sys.executable, "--model", "{model}"], "proof": proof}
         packet = {"instructions": "bounded"}
@@ -394,7 +399,8 @@ class ProviderEdges(unittest.TestCase):
             payload = {"schema_version": 1, "purpose": "verification", "configuration_hash": digest(cfg), "probe_harness_sha256": "fixture",
                        "checked_at": checked_at, "executable_sha256": executable_sha256,
                        "runtime_files": {},
-                       "cases": {x: True for x in ("exact_source_set", "outside_read_denied", "outside_write_denied", "network_denied", "child_cleanup")}}
+                       "cases": {x: {"passed": True, "measurement": {"fixture": True}}
+                                 for x in ("exact_source_set", "outside_read_denied", "outside_write_denied", "network_denied", "child_cleanup")}}
             evidence.write_text(json.dumps(payload))
             sha = digest(evidence.read_bytes())
             cfg["proof"] = {"schema_version": 1, "probe_harness_sha256": "fixture", "checked_at": checked_at, "configuration_hash": digest(cfg),
@@ -419,14 +425,18 @@ class ProviderEdges(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             evidence = Path(tmp) / "evidence.json"
             cfg = {"argv": [sys.executable], "output": "codex-data-only",
-                   "filesystem_scope": "codex-home-auth-only"}
+                   "filesystem_scope": "codex-home-auth-only",
+                   "loader_policy": "pe-dependent-load-system32"}
             current = datetime.now(timezone.utc).isoformat()
             cases = ("fresh_context", "tools_disabled", "ambient_disabled", "child_cleanup",
-                     "model_attestation", "subscription_auth_only")
+                     "model_attestation", "subscription_auth_only",
+                     "dependent_load_flags_system32", "delay_imports_absent",
+                     "imports_allowlisted")
             base = {"schema_version": 1, "purpose": "provider", "configuration_hash": digest(cfg),
                     "probe_harness_sha256": "fixture", "checked_at": "2000-01-01T00:00:00+00:00",
                     "executable_sha256": "0" * 64, "runtime_files": {},
-                    "cases": {case: True for case in cases}}
+                    "cases": {case: {"passed": True, "measurement": {"fixture": True}}
+                              for case in cases}}
             evidence.write_text(json.dumps(base))
             evidence_hash = digest(evidence.read_bytes())
             cfg["proof"] = {"schema_version": 1, "probe_harness_sha256": "fixture",

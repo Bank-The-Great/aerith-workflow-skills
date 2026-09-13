@@ -14,8 +14,9 @@ from .mirror import GitHub, sync
 from .models import load_config, refresh_catalog
 from .providers import validate_capability
 from .admission import verify_package
+from .processes import stable_directory
 from .store import Store, atomic_text, exclusive
-from .workspace import project_lock
+from .workspace import directory_identity, project_lock
 
 
 def parser():
@@ -140,8 +141,12 @@ def main(argv=None):
                 print(json.dumps(report, ensure_ascii=False, indent=2))
                 return 0 if report["review_passed"] else 2
             elif args.command in {"resume", "answer"}:
-                lock = project_lock(Path(result["project"]))
-                with exclusive(lock):
+                project = Path(result["project"])
+                git_dir = Path(result["git_dir"])
+                lock = project_lock(git_dir)
+                with stable_directory(project), stable_directory(git_dir), exclusive(lock):
+                    if directory_identity(git_dir) != result.get("git_dir_identity"):
+                        raise GateError("pinned Git metadata directory identity changed")
                     result = store.get(args.run_id)
                     if result["status"] == "cancelled":
                         raise GateError("cancelled run is terminal; start a new run")

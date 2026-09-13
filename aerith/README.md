@@ -24,13 +24,16 @@ bug/security/data-damage review. It is not a guarantee of finding every defect.
 Run `python aerith/project-creator.py --help` from the repository root.
 Supported commands: start, status, answer, pause, resume, cancel, review, sync,
 doctor; explicit maintenance commands: run, recover, catalog-refresh.
-`--state` precedes the command. Start/resume/answer run in the foreground unless
-`--background` is requested. Help/status/doctor do not start models or workers.
+`--state` precedes the command. Start/resume/answer run in the foreground.
+Help/status/doctor do not start models or workers.
 Direct invocation is for development/inspection only. Production and detached
 runs require a separately trusted host bootstrap that checks admission and
 loads hash-verified package bytes before any package code can execute. The
 package does not claim to defend against tampering by verifying itself after
-import. No trusted bootstrap means detached execution is refused.
+import. The current host bootstrap also refuses detached execution until a
+separately admitted protected controller executable and login-recovery service
+exist; `--background` therefore fails closed rather than relaunching mutable
+Python code.
 
 The explicit `review` command only writes review reports to private state. It
 does not author code, complete tickets, run tests, or create commits. Full
@@ -43,7 +46,10 @@ verification. A standalone stage does not invoke preceding stages.
   shell-profile invocation. Workers return bounded structured data.
 - SQLite event chain and full state hashes, revision comparisons, OS-held
   project locks shared across different state roots, edit journals, source
-  hashes, and local isolated branches.
+  hashes, and local isolated branches. Canonical packet, response, journal and
+  receipt files are written to a unique same-directory temporary file, flushed,
+  read back and atomically replaced. Worktrees live outside the per-run state
+  directories so Windows directory locks do not weaken those atomic updates.
 - Controller-owned tests, acceptance coverage and dependency checks, P0/P1/P2
   gates, P3 dispositions, and separate ticket/final review packets. Every ticket
   has a canonical hash-bound Markdown file. Each review attempt has a durable
@@ -92,9 +98,13 @@ verification. A standalone stage does not invoke preceding stages.
   reads only the Codex auth home plus bounded stdin. The Windows transport uses
   a locked, non-writable system CWD for that worker and the fixed Docker client
   to keep DLL lookup away from the project; it does not claim that CWD would
-  isolate a general vendor CLI. The source-built
-  worker remains a separately reviewed, host-pinned standalone executable with
-  no runtime-file closure; no ordinary Codex thread lifecycle is accepted.
+  isolate a general vendor CLI. The source-built worker remains a separately
+  reviewed, host-pinned standalone executable with no runtime-file closure. Its
+  Windows PE must carry loader-time `DependentLoadFlags=0x800`, have no
+  delay-import directory, import exactly the reviewed system DLL allowlist and
+  import the pre-main loader guard. Retained evidence contains the measured
+  result for every case; a shared success boolean is insufficient. No ordinary
+  Codex thread lifecycle is accepted.
 - A private GitHub outbox with idempotent markers and read-back. Unknown creates
   are reconciled, never blindly repeated. The initial Issue body is immutable;
   subsequent revisions are idempotent comments to avoid overwriting user edits.
@@ -116,10 +126,15 @@ A run configuration supplies exact `read_set`, `write_set`, approved `tests`
 verified `verification_sandbox`. Optional `input_artifacts` support standalone
 later stages; optional `github` contains a private repository and native CLI
 path, never a token. Do not place these host configuration files in this fork.
-The first safety release requires every scoped source to be an existing regular
-tracked UTF-8 file whose raw bytes equal the pinned Git blob. It does not create,
-delete, rename, link or change modes. Git is an absolute host-pinned executable;
-commit objects are built from reviewed bytes without clean/process filters.
+The first safety release requires one primary, non-linked Git metadata directory
+and every scoped source to be an existing regular tracked UTF-8 file whose raw
+bytes equal the pinned Git blob. It does not create, delete, rename, link or
+change modes. The controller persists and rechecks the metadata-directory object
+identity, uses an absolute hash-pinned Git core executable rather than a command
+launcher, disables ambient configuration, replace refs and lazy fetch, and
+addresses the exact Git directory, work tree and branch ref for every operation.
+The isolated source directory contains no `.git` file or directory. Commit
+objects are built from reviewed bytes without clean/process filters.
 An explicit containment probe produces evidence only. It never registers a
 capability in the trusted host policy or admits a skill automatically.
 
@@ -143,7 +158,7 @@ It remains synthetic and does not prove a live Sol or other provider worker.
 
 Still required before release: live Claude/Codex/Gemini conformance, actual
 account model availability/attestation, automatic new-run discovery, sandbox
-proof admission, native background scheduler registration and login recovery,
+proof admission, protected background-controller packaging and login recovery,
 GitHub parent/subissue relationship integration and a live mirror test,
 real single-task pilot, and host admission/index
 activation. These are not inferred from passing unit tests.

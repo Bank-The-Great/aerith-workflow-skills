@@ -4,7 +4,6 @@ import contextlib
 import io
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -18,9 +17,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from project_creator.contracts import (GateError, criteria, digest, safe_relative, ticket_order, validate_review)
 from project_creator.engine import Engine, RESOURCE_FILES, configure_runtime_resources, start
 from project_creator.models import catalog_pin, model_for, refresh_catalog
-from project_creator.store import Store, exclusive
+from project_creator.store import Store, atomic_text, exclusive
 from project_creator.workspace import (configure_git, git, propose_edits, reconcile_edits,
-                                       snapshot, project_lock, _overwrite_existing)
+                                       snapshot, project_lock, repo_git, _overwrite_existing)
 from project_creator.providers import attest_model, validate_capability
 from project_creator.admission import verify_package, CORE_SKILLS, admission_stopped
 from project_creator.processes import execute, reviewed_files
@@ -28,7 +27,8 @@ from project_creator.mirror import sync, marker
 from project_creator.cli import main
 
 PACKAGE = Path(__file__).resolve().parents[1]
-GIT_EXE = Path(shutil.which("git")).resolve()
+GIT_EXE = Path(os.environ.get(
+    "PROJECT_CREATOR_TEST_GIT", r"C:\Program Files\Git\mingw64\bin\git.exe"))
 configure_git({"executable": str(GIT_EXE), "sha256": digest(GIT_EXE.read_bytes())})
 configure_runtime_resources({name: (PACKAGE / name).read_bytes()
                              for name in RESOURCE_FILES.values()})
@@ -78,7 +78,7 @@ class Harness(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.project = self.root / "source"
         self.project.mkdir()
-        subprocess.run(["git", "init", "-q", str(self.project)], check=True)
+        subprocess.run([str(GIT_EXE), "init", "-q", str(self.project)], check=True)
         git(self.project, "config", "user.name", "Fixture")
         git(self.project, "config", "user.email", "fixture@example.invalid")
         (self.project / "calc.py").write_text("def increment(x):\n    return x\n", encoding="utf-8")
@@ -103,9 +103,13 @@ class Harness(unittest.TestCase):
         self.assertEqual(result["status"], "completed", result.get("last_error"))
         self.assertEqual(initial, (self.project / "calc.py").read_text())
         self.assertNotEqual(result["base"], result["delivery_commit"])
-        self.assertEqual(git(Path(result["worktree"]), "status", "--porcelain"), "")
-        committed = git(Path(result["worktree"]), "cat-file", "blob",
-                        result["delivery_commit"] + ":calc.py", strip=False)
+        worktree = Path(result["worktree"])
+        git_dir = Path(result["git_dir"])
+        self.assertFalse((worktree / ".git").exists())
+        self.assertEqual(repo_git(git_dir, worktree, "rev-parse", "--verify",
+                                  "refs/heads/" + result["branch"]), result["delivery_commit"])
+        committed = repo_git(git_dir, worktree, "cat-file", "blob",
+                             result["delivery_commit"] + ":calc.py", strip=False)
         self.assertEqual(committed, "def increment(x):\n    return x + 1\n")
         self.assertEqual([x[0] for x in self.log], ["grill-with-docs", "to-spec", "to-tickets", "implement", "spec-review", "defect-review", "spec-review", "defect-review"])
         self.assertTrue(self.store.verify())
@@ -194,6 +198,15 @@ class Harness(unittest.TestCase):
             self.create()
         self.assertEqual((self.project / "calc.py").read_text(), "user work")
 
+    def test_replaced_git_metadata_directory_is_refused(self):
+        run = self.create()
+        metadata = self.project / ".git"
+        metadata.rename(self.project / ".git.original")
+        metadata.mkdir()
+        with self.assertRaisesRegex(GateError, "metadata directory identity changed"):
+            self.engine.run(run["id"], max_steps=1)
+        self.assertEqual(self.log, [])
+
     def test_no_weakening_verification_command_ids(self):
         bad = spec()
         bad["requirements"][0]["acceptance"][0]["test_ids"] = ["invented"]
@@ -230,13 +243,15 @@ class Harness(unittest.TestCase):
         before["status"] = "paused"
         self.store.save(before, "pause", expected_revision=before["revision"])
         root = Path(before["worktree"])
-        head = git(root, "rev-parse", "HEAD")
+        git_dir = Path(before["git_dir"])
+        ref = "refs/heads/" + before["branch"]
+        head = repo_git(git_dir, root, "rev-parse", "--verify", ref)
         report = self.engine.review_once(run["id"], spec_vendor="claude")
         after = self.store.get(run["id"])
         self.assertFalse(report["delivery_authorized"])
         self.assertFalse(report["tests_rerun"])
         self.assertEqual(before, after)
-        self.assertEqual(head, git(root, "rev-parse", "HEAD"))
+        self.assertEqual(head, repo_git(git_dir, root, "rev-parse", "--verify", ref))
         self.assertEqual([x[0] for x in self.log][-2:], ["spec-review", "defect-review"])
         self.assertEqual(self.log[-2][1], "claude-second-1")
         self.assertEqual(self.log[-1][1], "codex-second-1")
@@ -303,7 +318,7 @@ class Harness(unittest.TestCase):
         other = Store(self.root / "other-state", create=True)
         try:
             second = start(other, self.project, "Other", self.config, catalog(), "codex")
-            with exclusive(project_lock(self.project)):
+            with exclusive(project_lock(Path(run["git_dir"]))):
                 with self.assertRaisesRegex(GateError, "another worker"):
                     Engine(other).run(second["id"], max_steps=1)
         finally:
@@ -339,6 +354,22 @@ class Contracts(unittest.TestCase):
             self.assertEqual(attempts, ["blocked"])
             self.assertEqual(path.read_text(encoding="utf-8"), "after")
             self.assertFalse(moved.exists())
+
+    def test_atomic_state_preserves_old_file_on_pre_replace_process_death(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "state.json"
+            atomic_text(path, "old")
+            code = (
+                "import os,sys; from pathlib import Path; "
+                f"sys.path.insert(0, {str(PACKAGE)!r}); "
+                "import project_creator.store as store; "
+                "store._before_atomic_replace=lambda: os._exit(77); "
+                "store.atomic_text(Path(sys.argv[1]), 'new')"
+            )
+            child = subprocess.run([sys.executable, "-I", "-c", code, str(path)],
+                                   check=False)
+            self.assertEqual(child.returncode, 77)
+            self.assertEqual(path.read_text(encoding="utf-8"), "old")
 
     def test_ticket_coverage_cycle_and_unknown(self):
         acs = criteria(spec(), {"unit"})

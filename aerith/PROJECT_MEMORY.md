@@ -132,3 +132,22 @@
   admits one hashed non-augmentable Git executable, materializes exact blobs in
   a no-checkout worktree, constructs commits with plumbing and rechecks every
   blob, and performs existing-file updates through a locked verified handle.
+- 2026-09-14: Resolving a caller-supplied project path before admission follows
+  a replaced junction. Preserve the lexical absolute path, hold its non-reparse
+  ancestry during use, and persist the opened Git metadata directory's object
+  identity so replacement is rejected rather than silently rediscovered.
+- 2026-09-14: Git discovery is not a continuing authority. Admit the primary
+  metadata directory once, use an exact hash-pinned core executable with an
+  explicit Git directory, work tree and branch ref, and disable replace refs,
+  lazy fetch, hooks, filters and ambient configuration on every invocation. A
+  plain isolated source directory should not contain a rediscoverable `.git`.
+- 2026-09-14: Rewriting canonical state in place is not crash recovery. Write a
+  unique same-directory temporary, flush and read it back, replace atomically,
+  and keep locked worktrees outside canonical state directories on Windows so
+  path-protection handles do not prevent the atomic rename.
+- 2026-09-14: A process-level DLL search call in `main` is too late for imports
+  performed by the Windows loader. A standalone worker needs loader-time PE
+  `DependentLoadFlags=0x800`, zero delay imports and an exact audited system-DLL
+  allowlist in addition to its pre-main runtime guard. Host probes must verify
+  and memory-load package bytes before importing any candidate module and must
+  use an explicit pinned Git executable rather than ambient PATH.

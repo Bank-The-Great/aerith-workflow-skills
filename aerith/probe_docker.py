@@ -102,9 +102,13 @@ print(json.dumps(out))
         package = Path(__file__).resolve().parent / "project_creator"
         runtime_files = {str(runtime): digest(runtime.read_bytes()) for runtime in
                          (package / "contracts.py", package / "processes.py", package / "docker_sandbox.py")}
+        measured_cases = {key: {"passed": True, "measurement": {
+            "observed": True, "container_id": runner.last_container_id,
+            "mounts_sha256": runner.last_mounts_hash}}
+            for key in cases}
         payload = {"schema_version": 1, "purpose": "verification", "probe_harness_sha256": harness_hash,
                    "checked_at": datetime.now(timezone.utc).isoformat(), "image": image,
-                   "configuration_hash": digest(cfg), "cases": cases,
+                   "configuration_hash": digest(cfg), "cases": measured_cases,
                    "executable_sha256": executable_sha256, "runtime_files": runtime_files,
                    "daemon_inspection": runner.last_inspection,
                    "daemon_id": daemon_id, "container_id": runner.last_container_id,

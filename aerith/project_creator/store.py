@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 import stat
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,6 +17,10 @@ from .processes import _same_windows_path, _windows_final_path, stable_directory
 
 def now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def _before_atomic_replace():
+    """Test seam for proving that a pre-replace process death preserves old state."""
 
 
 class Store:
@@ -141,44 +146,132 @@ def exclusive(path: Path):
                 fcntl.flock(stream, fcntl.LOCK_UN)
 
 
-def atomic_text(path: Path, text: str):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with stable_directory(path.parent.resolve()):
-        raw = text.encode("utf-8")
-        if os.name == "nt":
-            import msvcrt
-            from ctypes import wintypes
-            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-            kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
-                                           ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
-                                           wintypes.HANDLE]
-            kernel.CreateFileW.restype = wintypes.HANDLE
-            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-            invalid = wintypes.HANDLE(-1).value
-            handle = kernel.CreateFileW(str(path), 0x80000000 | 0x40000000,
-                                        0x00000001, None, 4, 0x80 | 0x00200000, None)
-            if handle == invalid:
-                raise GateError("could not open stable state file")
-            class AttributeTag(ctypes.Structure):
-                _fields_ = [("FileAttributes", wintypes.DWORD), ("ReparseTag", wintypes.DWORD)]
-            tag = AttributeTag()
-            if (not kernel.GetFileInformationByHandleEx(handle, 9, ctypes.byref(tag), ctypes.sizeof(tag))
-                    or tag.FileAttributes & 0x400 or tag.FileAttributes & 0x10
-                    or not _same_windows_path(_windows_final_path(handle), path)):
-                kernel.CloseHandle(handle)
-                raise GateError("state target is not a regular non-reparse file")
-            descriptor = msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_BINARY)
-        else:
-            descriptor = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
-            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-                os.close(descriptor)
-                raise GateError("state target is not a regular file")
+def _atomic_text_windows(path: Path, raw: bytes, temporary: Path):
+    """Replace atomically while holding and rechecking one opened parent identity."""
+    import msvcrt
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                   ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                   wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                                   ctypes.c_void_p, wintypes.DWORD]
+    kernel.SetFileInformationByHandle.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    invalid = wintypes.HANDLE(-1).value
+    directory_flags = 0x02000000 | 0x00200000
+    parent_handle, handle, descriptor = None, None, None
+    renamed = False
+    try:
+        parent_handle = kernel.CreateFileW(
+            str(path.parent), 0x80000000,
+            0x00000001 | 0x00000002 | 0x00000004,
+            None, 3, directory_flags, None)
+        if parent_handle == invalid:
+            parent_handle = None
+            raise GateError("could not open atomic state parent")
+        attributes = kernel.GetFileAttributesW(str(path.parent))
+        if (attributes == 0xFFFFFFFF or attributes & 0x400
+                or not _same_windows_path(_windows_final_path(parent_handle), path.parent)):
+            raise GateError("atomic state parent identity changed")
+        handle = kernel.CreateFileW(
+            str(temporary), 0x80000000 | 0x40000000 | 0x00010000,
+            0x00000001 | 0x00000002 | 0x00000004,
+            None, 1, 0x80 | 0x00200000, None)
+        if handle == invalid:
+            handle = None
+            raise GateError("could not create atomic state temporary")
+        if not _same_windows_path(_windows_final_path(handle), temporary):
+            raise GateError("atomic state temporary identity changed")
+        descriptor = msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_BINARY)
+        handle = None
         with os.fdopen(descriptor, "r+b", closefd=True) as stream:
-            stream.seek(0)
+            descriptor = None
             stream.write(raw)
-            stream.truncate()
             stream.flush()
             os.fsync(stream.fileno())
             stream.seek(0)
             if stream.read() != raw:
-                raise GateError("stable state write could not be verified")
+                raise GateError("atomic state temporary could not be verified")
+
+            class FileRenameInfo(ctypes.Structure):
+                _fields_ = [("ReplaceIfExists", wintypes.BOOLEAN),
+                            ("RootDirectory", wintypes.HANDLE),
+                            ("FileNameLength", wintypes.DWORD),
+                            ("FileName", wintypes.WCHAR * 1)]
+
+            destination = str(path).encode("utf-16-le")
+            size = FileRenameInfo.FileName.offset + len(destination) + 2
+            buffer = ctypes.create_string_buffer(size)
+            info = FileRenameInfo.from_buffer(buffer)
+            info.ReplaceIfExists = 1
+            info.RootDirectory = None
+            info.FileNameLength = len(destination)
+            ctypes.memmove(ctypes.addressof(buffer) + FileRenameInfo.FileName.offset,
+                           destination, len(destination))
+            native = msvcrt.get_osfhandle(stream.fileno())
+            _before_atomic_replace()
+            if not kernel.SetFileInformationByHandle(native, 3, buffer, size):
+                raise GateError("atomic state replacement failed")
+            renamed = True
+            if (not _same_windows_path(_windows_final_path(parent_handle), path.parent)
+                    or not _same_windows_path(_windows_final_path(native), path)):
+                raise GateError("atomic state replacement identity changed")
+            stream.seek(0)
+            if stream.read() != raw:
+                raise GateError("atomic state replacement could not be verified")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        elif handle is not None:
+            kernel.CloseHandle(handle)
+        if parent_handle is not None:
+            kernel.CloseHandle(parent_handle)
+        if not renamed:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def atomic_text(path: Path, text: str):
+    """Durably replace one state file without exposing a truncated canonical file."""
+    path = Path(os.path.abspath(str(path)))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = text.encode("utf-8")
+    temporary = path.parent / ("." + path.name + "." + uuid.uuid4().hex + ".tmp")
+    if os.name == "nt":
+        _atomic_text_windows(path, raw, temporary)
+        return
+    renamed = False
+    with stable_directory(path.parent):
+        descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_RDWR |
+                             getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise GateError("atomic state temporary is not a regular file")
+            with os.fdopen(descriptor, "r+b", closefd=True) as stream:
+                descriptor = None
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+                stream.seek(0)
+                if stream.read() != raw:
+                    raise GateError("atomic state temporary could not be verified")
+            _before_atomic_replace()
+            os.replace(temporary, path)
+            renamed = True
+            parent = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(parent)
+            finally:
+                os.close(parent)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            if not renamed:
+                try:
+                    temporary.unlink()
+                except FileNotFoundError:
+                    pass
