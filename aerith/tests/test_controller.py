@@ -360,7 +360,7 @@ class Contracts(unittest.TestCase):
             self.assertEqual(result.stdout.strip(), "reviewed")
 
     @unittest.skipUnless(os.name == "nt", "Windows neutral CWD contract")
-    def test_provider_launch_ignores_mutable_working_directory_namespace(self):
+    def test_data_worker_launch_ignores_supplied_working_directory_for_dll_lookup(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "attacker-controlled-provider-cwd"
             root.mkdir()
@@ -369,7 +369,7 @@ class Contracts(unittest.TestCase):
                        "assert Path.cwd() != Path(r'" + str(root) + "'); "
                        "assert not Path('AGENTS.md').exists(); print('isolated')")
             result = execute([sys.executable, "-I", "-c", program], cwd=root,
-                             require_neutral_cwd=True)
+                             data_only_cwd=True)
             self.assertEqual(result.stdout.strip(), "isolated")
 
     @unittest.skipUnless(os.name == "nt", "Windows file-share lock contract")

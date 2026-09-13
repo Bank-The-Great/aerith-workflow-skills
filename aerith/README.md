@@ -74,16 +74,12 @@ verification. A standalone stage does not invoke preceding stages.
   retained proof.
   Image health checks and daemon log forwarding are disabled and inspected;
   start and cleanup use the immutable created container ID.
-- Claude stream parsing checks init metadata, actual assistant-message model,
-  model usage, no tools/MCP, and an error-free final JSON result. Subscription
-  mode refuses non-subscription auth and excludes API-routing environment flags.
-  Provider and auth calls never run in the target worktree or a user-owned empty
-  directory. On Windows, the transport replaces the requested CWD with a
-  system-owned neutral directory only after proving the active token cannot add
-  or delete entries, change its DACL/owner, or find known ambient instruction
-  names there or above it. Project data crosses only in the bounded packet. This
-  implementation is not itself a provider admission certificate and fails
-  closed on hosts without this neutral-CWD admission boundary.
+- Claude/Codex/Gemini provenance parsers remain available for offline protocol
+  conformance, but this candidate's production launcher rejects ordinary vendor
+  CLIs. Only the reviewed Codex data-only native worker is currently admitted;
+  other vendors require equivalent workers before activation. Native/non-Docker
+  verification is likewise rejected because it cannot enforce the frozen source
+  packet.
 - The Codex data-only edge sends a bounded controller packet plus a strict
   stage-specific JSON schema. It accepts exactly one metadata record and one
   result record whose request, response, requested-model and provider-model
@@ -92,9 +88,12 @@ verification. A standalone stage does not invoke preceding stages.
   executable bytes and runtime closure. On Windows, every mutable path ancestor,
   the executable and each reviewed runtime dependency are held read-only through
   child exit, preventing path retargeting or replacement between validation and
-  use. The source-built worker remains a separately reviewed,
-  host-pinned executable; no ordinary Codex thread lifecycle is accepted by
-  this edge.
+  use. Its reviewed code disables project/ancestor configuration discovery and
+  reads only the Codex auth home plus bounded stdin. The Windows transport uses
+  a locked, non-writable system CWD to keep DLL lookup away from the project; it
+  does not claim that CWD would isolate a general vendor CLI. The source-built
+  worker remains a separately reviewed, host-pinned standalone executable with
+  no runtime-file closure; no ordinary Codex thread lifecycle is accepted.
 - A private GitHub outbox with idempotent markers and read-back. Unknown creates
   are reconciled, never blindly repeated. The initial Issue body is immutable;
   subsequent revisions are idempotent comments to avoid overwriting user edits.

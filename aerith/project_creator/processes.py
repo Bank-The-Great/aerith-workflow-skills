@@ -171,16 +171,14 @@ def _locked_windows_reviewed_path(path: Path, expected_sha256: str):
         raise
 
 
-def _locked_windows_neutral_directory():
-    """Return a system-owned CWD that the current token cannot populate.
+def _locked_windows_data_worker_directory():
+    """Return a system-owned CWD for a reviewed data-only executable.
 
-    Holding a directory handle prevents renaming the directory, but Windows does
-    not make its child namespace immutable.  A freshly created user-owned empty
-    directory is therefore not an isolation boundary: another same-token process
-    can add AGENTS.md or vendor configuration after the emptiness check.  The
-    Windows system directory is suitable only when the active token cannot add,
-    delete, or take ownership of entries and no known ambient instruction entry
-    exists in it or an ancestor.
+    This protects current-directory DLL lookup and avoids the project directory.
+    It is not an ambient-instruction boundary for a general vendor CLI because a
+    CLI may search writable ancestors. Callers must separately admit an exact
+    worker whose reviewed code disables project/ancestor discovery and reads only
+    its named auth home plus the bounded stdin packet.
     """
     import ctypes
     from ctypes import wintypes
@@ -202,9 +200,8 @@ def _locked_windows_neutral_directory():
     if not path.is_absolute() or not path.is_dir() or not _reparse_free(path):
         raise GateError("neutral provider working directory is not trusted")
     ambient_names = {"AGENTS.md", "CLAUDE.md", "GEMINI.md", ".claude", ".codex", ".gemini", ".agents", ".mcp.json"}
-    for directory in (path, *path.parents):
-        if any((directory / name).exists() for name in ambient_names):
-            raise GateError("neutral provider working directory contains ambient configuration")
+    if any((path / name).exists() for name in ambient_names):
+        raise GateError("data-worker system directory contains ambient configuration")
 
     # Directory-specific FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY and
     # FILE_DELETE_CHILD, plus the standard delete/DACL/owner rights.  Probe each
@@ -216,9 +213,9 @@ def _locked_windows_neutral_directory():
         handle = kernel.CreateFileW(str(path), right, share_all, None, 3, flags, None)
         if handle != invalid:
             kernel.CloseHandle(handle)
-            raise GateError("neutral provider working directory is writable by the active token")
+            raise GateError("data-worker system directory is writable by the active token")
         if ctypes.get_last_error() != 5:  # ERROR_ACCESS_DENIED is the only safe result.
-            raise GateError("neutral provider working-directory rights could not be verified")
+            raise GateError("data-worker system-directory rights could not be verified")
 
     handles = []
     try:
@@ -227,14 +224,13 @@ def _locked_windows_neutral_directory():
             handle = kernel.CreateFileW(str(directory), 0x80000000, 0x00000001,
                                         None, 3, flags, None)
             if handle == invalid:
-                raise GateError("could not lock neutral provider working directory")
+                raise GateError("could not lock data-worker system directory")
             handles.append(handle)
             attributes = ctypes.windll.kernel32.GetFileAttributesW(str(directory))
             if attributes == 0xFFFFFFFF or attributes & 0x400:
-                raise GateError("neutral provider working directory contains a reparse point")
-        for directory in (path, *path.parents):
-            if any((directory / name).exists() for name in ambient_names):
-                raise GateError("neutral provider working directory gained ambient configuration")
+                raise GateError("data-worker system directory contains a reparse point")
+        if any((path / name).exists() for name in ambient_names):
+            raise GateError("data-worker system directory gained ambient configuration")
         return path, _WindowsPathLock(handles, None)
     except BaseException:
         for handle in reversed(handles):
@@ -284,20 +280,20 @@ def reviewed_files(expected_hashes):
 
 def execute(argv: list[str], *, cwd: Path, stdin="", timeout=600, cancelled=lambda: False,
             max_bytes=2_000_000, env=None, expected_executable_sha256=None,
-            expected_runtime_sha256=None, require_neutral_cwd=False) -> Result:
+            expected_runtime_sha256=None, data_only_cwd=False) -> Result:
     if not isinstance(argv, list) or not argv or not all(isinstance(x, str) and "\x00" not in x for x in argv):
         raise GateError("expected fixed argv")
     if Path(argv[0]).suffix.lower() in {".cmd", ".bat", ".ps1"}:
         raise GateError("resolve CLI to its native executable or node script; no shell wrapper")
     reviewed_locks = _reviewed_locks(expected_executable_sha256, expected_runtime_sha256, argv)
     working_directory = Path(cwd)
-    if require_neutral_cwd:
+    if data_only_cwd:
         if os.name != "nt":
             for lock in reversed(reviewed_locks):
                 lock.close()
-            raise GateError("neutral provider working directory is unsupported on this host")
+            raise GateError("data-worker system directory is unsupported on this host")
         try:
-            working_directory, lock = _locked_windows_neutral_directory()
+            working_directory, lock = _locked_windows_data_worker_directory()
             reviewed_locks.append(lock)
         except BaseException:
             for lock in reversed(reviewed_locks):

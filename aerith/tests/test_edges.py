@@ -99,44 +99,49 @@ class ProviderEdges(unittest.TestCase):
             with self.assertRaises(GateError):
                 self.parse(bad)
 
-    def test_stream_cannot_skip_subscription_guard(self):
-        for auth in (None, "api"):
+    def test_general_vendor_cli_cannot_enter_production_provider_route(self):
+        for output in ("claude-stream", "codex-provenance", "gemini-provenance"):
             with patch("project_creator.providers.execute") as execute:
-                provider = CLIProvider("claude", {"output": "claude-stream", "auth_mode": auth}, audit=lambda *a: None)
-                with self.assertRaisesRegex(GateError, "subscription-only"):
+                provider = CLIProvider("fixture", {"output": output}, audit=lambda *a: None)
+                with self.assertRaisesRegex(GateError, "data-only"):
                     provider.invoke("implement", "chosen", {}, Path.cwd())
                 execute.assert_not_called()
 
     def test_provider_uses_the_same_environment_snapshot_it_validated(self):
-        config = {"output": "claude-stream", "auth_mode": "claude-subscription", "attestation": {"mode": "stream"},
+        config = {"output": "codex-data-only", "auth_mode": "codex-subscription",
+                  "filesystem_scope": "codex-home-auth-only",
+                  "attestation": {"mode": "provider-response-header"},
                   "argv": [sys.executable, "--model", "{model}"]}
         original_path = os.environ.get("PATH")
         snapshots = []
         def validate(cfg, purpose, *, environment):
             snapshots.append(environment)
             os.environ["PATH"] = "synthetic-change-after-validation"
-        valid_implement = json.dumps({"changes": [], "summary": "none", "questions": []})
-        replies = iter([Result(0, '{"loggedIn":true,"authMethod":"claude.ai"}', "", 0),
-                        Result(0, "\n".join(json.dumps(x) for x in stream(result=valid_implement)), "", 0)])
+        packet = {}
+        request_id = digest(packet)
+        common = {"request_id": request_id, "response_id": "response-1",
+                  "requested_model": "chosen", "provider_model": "chosen"}
+        response = "\n".join(json.dumps(x) for x in (
+            {"type": "response_metadata", **common},
+            {"type": "result", **common,
+             "output": {"changes": [], "summary": "none", "questions": []}},
+        ))
         directories = []
         def launch(*args, **kwargs):
             cwd = kwargs["cwd"]
             self.assertEqual(list(cwd.iterdir()), [])
             directories.append(cwd)
-            if len(directories) == 1:
-                (cwd / "CLAUDE.md").write_text("synthetic auth pollution", encoding="utf-8")
-            return next(replies)
+            return Result(0, response, "", 0)
         with patch.dict(os.environ), patch("project_creator.providers.validate_capability", side_effect=validate), patch("project_creator.providers.execute", side_effect=launch) as execute:
-            CLIProvider("claude", config, audit=lambda *a: None).invoke("implement", "chosen", {}, Path.cwd())
+            CLIProvider("codex", config, audit=lambda *a: None).invoke("implement", "chosen", packet, Path.cwd())
             for call in execute.call_args_list:
                 self.assertIs(call.kwargs["env"], snapshots[0])
                 self.assertEqual(call.kwargs["env"].get("PATH"), original_path)
                 self.assertNotEqual(call.kwargs["cwd"], Path.cwd())
                 self.assertTrue(call.kwargs["cwd"].name.startswith("project-creator-provider-"))
                 self.assertFalse(call.kwargs["cwd"].exists())
-            self.assertEqual(len({str(path) for path in directories}), 2)
-            self.assertTrue(directories[0].name.startswith("project-creator-provider-auth-"))
-            self.assertTrue(directories[1].name.startswith("project-creator-provider-inference-"))
+                self.assertTrue(call.kwargs["data_only_cwd"])
+            self.assertEqual(len(directories), 1)
 
     def test_data_only_codex_receives_bounded_packet_and_strict_stage_schema(self):
         packet = {"instructions": "controller-only instructions", "role": "untrusted role data",
@@ -150,6 +155,7 @@ class ProviderEdges(unittest.TestCase):
              "output": {"changes": [], "summary": "nothing", "questions": []}},
         ))
         config = {"output": "codex-data-only", "auth_mode": "codex-subscription",
+                  "filesystem_scope": "codex-home-auth-only",
                   "attestation": {"mode": "provider-response-header"},
                   "argv": [sys.executable, "--model", "{model}"],
                   "proof": {"executable_sha256": "a" * 64}}
@@ -177,6 +183,7 @@ class ProviderEdges(unittest.TestCase):
             {"type": "result", **common, "output": {"wrong_stage_shape": True}},
         ))
         config = {"output": "codex-data-only", "auth_mode": "codex-subscription",
+                  "filesystem_scope": "codex-home-auth-only",
                   "attestation": {"mode": "provider-response-header"},
                   "argv": [sys.executable, "--model", "{model}"]}
         with patch("project_creator.providers.validate_capability"), \
@@ -255,10 +262,11 @@ class ProviderEdges(unittest.TestCase):
             self.assertFalse("DOCKER_HOST" in call.kwargs["env"])
             self.assertTrue("project-creator-docker-client-" in call.kwargs["env"]["DOCKER_CONFIG"])
 
-    def test_provider_and_verifiers_pass_the_complete_reviewed_runtime_closure(self):
+    def test_only_data_worker_and_docker_receive_reviewed_runtime_inputs(self):
         proof = {"executable_sha256": "a" * 64,
-                 "runtime_files": {str(Path.cwd() / "reviewed.py"): "b" * 64}}
+                 "runtime_files": {}}
         config = {"output": "codex-data-only", "auth_mode": "codex-subscription",
+                  "filesystem_scope": "codex-home-auth-only",
                   "attestation": {"mode": "provider-response-header"},
                   "argv": [sys.executable, "--model", "{model}"], "proof": proof}
         packet = {"instructions": "bounded"}
@@ -275,14 +283,14 @@ class ProviderEdges(unittest.TestCase):
             CLIProvider("codex", config, audit=lambda *a: None).invoke(
                 "implement", "chosen", packet, Path.cwd())
             self.assertEqual(launch.call_args.kwargs["expected_runtime_sha256"], proof["runtime_files"])
-            self.assertTrue(launch.call_args.kwargs["require_neutral_cwd"])
+            self.assertTrue(launch.call_args.kwargs["data_only_cwd"])
 
         native = {"argv": [sys.executable], "proof": proof}
         with patch("project_creator.providers.validate_capability"), \
                 patch("project_creator.providers.execute", return_value=Result(0, "", "", 0)) as launch:
-            VerificationRunner(native, {"unit": ["-c", "pass"]}).run(["unit"], Path.cwd())
-            self.assertEqual(launch.call_args.kwargs["expected_executable_sha256"], "a" * 64)
-            self.assertEqual(launch.call_args.kwargs["expected_runtime_sha256"], proof["runtime_files"])
+            with self.assertRaisesRegex(GateError, "Docker verification"):
+                VerificationRunner(native, {"unit": ["-c", "pass"]}).run(["unit"], Path.cwd())
+            launch.assert_not_called()
 
         docker = docker_config() | {"proof": proof}
         with patch("project_creator.docker_sandbox.execute", return_value=Result(0, "", "", 0)) as launch:
@@ -389,7 +397,8 @@ class ProviderEdges(unittest.TestCase):
     def test_capability_rejects_rewrapped_old_or_other_executable_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             evidence = Path(tmp) / "evidence.json"
-            cfg = {"argv": [sys.executable]}
+            cfg = {"argv": [sys.executable], "output": "codex-data-only",
+                   "filesystem_scope": "codex-home-auth-only"}
             current = datetime.now(timezone.utc).isoformat()
             cases = ("fresh_context", "tools_disabled", "ambient_disabled", "child_cleanup",
                      "model_attestation", "subscription_auth_only")

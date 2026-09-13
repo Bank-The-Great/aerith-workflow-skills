@@ -91,12 +91,19 @@
   every source file plus its namespace until container cleanup; never mount a
   same-user-writable packet directory whose tests can be replaced or augmented.
 - 2026-09-14: A Windows directory handle does not prevent new child entries.
-  Never claim an empty user-owned CWD is immutable. Replace the child CWD with a
-  system-owned neutral directory only after independently denying add-file,
-  add-directory, delete-child, delete, WRITE_DAC and WRITE_OWNER to the active
-  token and checking known ambient names in its ancestry. Fail closed elsewhere.
+  Never claim an empty user-owned CWD is immutable. A first revision moved the
+  child to a non-writable system directory, but writable drive-root ancestors
+  made that insufficient for a general CLI that performs ancestor discovery.
+  That general-CLI mitigation is superseded by the data-only-worker rule below.
 - 2026-09-14: Individually mounted files do not hide pre-existing image content
   at their parent directory. Shadow `/workspace` with an inspected read-only
   empty tmpfs, then verify the exact visible entry set before exec. Runtime proof
   must bind and execute the Docker adapter's full local import closure, not only
   its top-level source file.
+- 2026-09-14: Admit provider execution only when an exact reviewed standalone
+  data-only worker disables project/ancestor discovery and accepts project data
+  solely through bounded stdin; use the system CWD only to remove current-dir DLL
+  injection, never as proof about generic CLI instruction discovery. Reject
+  ordinary vendor CLIs until they have equivalent workers. Likewise reject the
+  native verifier path: only the exact-packet Docker route binds tests to the
+  controller's frozen source snapshot.

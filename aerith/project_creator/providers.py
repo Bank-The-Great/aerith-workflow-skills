@@ -13,10 +13,11 @@ from pathlib import Path
 from .contracts import GateError, digest, safe_text
 from .processes import execute, minimal_environment
 from .output_schemas import schema_for, validate_output
-from .provenance import parse_codex_data_only, parse_codex_provenance, parse_gemini_provenance
+from .provenance import parse_codex_data_only
 
 _HOST_CAPABILITIES = {}
 _VALIDATED_RUNTIME_LOCK = threading.RLock()
+_ADMITTED_PROVIDER_OUTPUTS = {"codex-data-only"}
 
 
 def configure_host_capabilities(approved):
@@ -100,6 +101,9 @@ def parse_claude_stream(text, requested):
 def validate_capability(config: dict, purpose: str, *, environment=None):
     if _HOST_CAPABILITIES.get(digest(config)) != purpose:
         raise GateError("capability is not pinned by the trusted host admission registry")
+    if purpose == "provider" and (config.get("output") not in _ADMITTED_PROVIDER_OUTPUTS
+                                  or config.get("filesystem_scope") != "codex-home-auth-only"):
+        raise GateError("provider is not an admitted data-only worker")
     proof = config.get("proof", {})
     if purpose == "provider" and proof.get("environment_hash") != digest(provider_environment(config) if environment is None else environment):
         raise GateError("provider auth-home/runtime environment changed after host review")
@@ -149,6 +153,8 @@ def validate_capability(config: dict, purpose: str, *, environment=None):
     if not executable.is_absolute() or digest(executable.read_bytes()) != proof.get("executable_sha256"):
         raise GateError(f"{purpose} executable changed after proof")
     dependencies = proof.get("runtime_files", {})
+    if purpose == "provider" and dependencies:
+        raise GateError("data-only provider must be one reviewed native executable")
     if config.get("kind") == "docker":
         package = Path(__file__).resolve().parent
         required_runtime = {package / name for name in ("contracts.py", "processes.py", "docker_sandbox.py")}
@@ -248,12 +254,14 @@ class CLIProvider:
         self.name, self.config, self.audit, self.cancelled = name, config, audit, cancelled
 
     def invoke(self, stage: str, model: str, packet: dict, directory: Path) -> dict:
-        required_auth = {"codex-provenance": "codex-subscription", "codex-data-only": "codex-subscription",
-                         "gemini-provenance": "gemini-subscription"}
-        if self.config.get("output") in required_auth and self.config.get("auth_mode") != required_auth[self.config["output"]]:
-            raise GateError("isolated provenance adapters require subscription-only authentication")
-        if self.config.get("output") == "claude-stream" and self.config.get("auth_mode") != "claude-subscription":
-            raise GateError("Claude stream adapter requires subscription-only authentication")
+        if (self.config.get("output") not in _ADMITTED_PROVIDER_OUTPUTS
+                or self.config.get("filesystem_scope") != "codex-home-auth-only"):
+            raise GateError("only a reviewed data-only provider worker may be launched")
+        if self.config.get("auth_mode") != "codex-subscription":
+            raise GateError("data-only provider requires subscription-only authentication")
+        if (self.config.get("argv", [None])[1:] != ["--model", "{model}"]
+                or Path(self.config["argv"][0]).suffix.lower() != ".exe"):
+            raise GateError("data-only provider requires one reviewed native executable")
         env = provider_environment(self.config)
         validate_capability(self.config, "provider", environment=env)
         if not self.config.get("attestation"):
@@ -262,39 +270,19 @@ class CLIProvider:
         if not any(model in arg for arg in argv):
             raise GateError("provider does not explicitly select the pinned model")
         request_id = digest(packet)
-        worker_packet = packet
-        if self.config.get("output") == "codex-data-only":
-            worker_packet = {
-                "request_id": request_id,
-                "instructions": packet.get("instructions", ""),
-                "input": {key: value for key, value in packet.items() if key != "instructions"},
-                "output_schema": schema_for(stage),
-            }
+        worker_packet = {
+            "request_id": request_id,
+            "instructions": packet.get("instructions", ""),
+            "input": {key: value for key, value in packet.items() if key != "instructions"},
+            "output_schema": schema_for(stage),
+        }
         prompt = json.dumps(worker_packet, ensure_ascii=False)
         safe_text(prompt)
         self.audit("provider_start", {"vendor": self.name, "model_requested": model, "stage": stage,
                    "packet_hash": digest(packet), "adapter_hash": digest(self.config), "cost_class": "ruby", "billing": "existing-cli-auth; exact marginal spend unknown"})
-        # Never make a subscription-authenticated provider process discover a
-        # project's local instructions, plugins, hooks or vendor configuration.
-        # The bounded packet is the only project data crossing this boundary.
-        if self.config.get("auth_mode") == "claude-subscription":
-            with tempfile.TemporaryDirectory(prefix="project-creator-provider-auth-") as auth_directory:
-                auth_cwd = Path(auth_directory)
-                if any(auth_cwd.iterdir()):
-                    raise GateError("provider auth working directory is not empty")
-                auth = execute([argv[0], "auth", "status", "--json"], cwd=auth_cwd, timeout=20, env=env,
-                               cancelled=self.cancelled,
-                               expected_executable_sha256=self.config.get("proof", {}).get("executable_sha256"),
-                               expected_runtime_sha256=self.config.get("proof", {}).get("runtime_files", {}),
-                               require_neutral_cwd=True)
-                try:
-                    status = json.loads(auth.stdout)
-                except ValueError as exc:
-                    raise GateError("subscription authentication could not be verified") from exc
-                if auth.returncode or status.get("loggedIn") is not True or status.get("authMethod") != "claude.ai":
-                    raise GateError("existing Claude subscription authentication required")
-        # Auth and inference never reuse a directory. Even a correctly pinned
-        # auth process cannot leave local instructions for the model process.
+        # The exact reviewed worker disables project/ancestor config discovery.
+        # The transport also replaces this disposable caller path with a locked,
+        # non-writable system CWD to keep DLL search away from the project.
         with tempfile.TemporaryDirectory(prefix="project-creator-provider-inference-") as inference_directory:
             inference_cwd = Path(inference_directory)
             if any(inference_cwd.iterdir()):
@@ -303,35 +291,14 @@ class CLIProvider:
                              cancelled=self.cancelled, env=env,
                              expected_executable_sha256=self.config.get("proof", {}).get("executable_sha256"),
                              expected_runtime_sha256=self.config.get("proof", {}).get("runtime_files", {}),
-                             require_neutral_cwd=True)
+                             data_only_cwd=True)
         if result.returncode:
             self.audit("provider_failure", {"vendor": self.name, "exit_code": result.returncode})
             raise GateError("provider refused or failed; inspect authentication/model availability outside the AI transcript")
         safe_text(result.stdout)
         try:
-            mode = self.config.get("output", "json")
-            metadata = {}
-            stream_parsers = {"claude-stream": parse_claude_stream, "codex-provenance": parse_codex_provenance,
-                              "gemini-provenance": parse_gemini_provenance}
-            if mode == "codex-data-only":
-                response, metadata = parse_codex_data_only(result.stdout, model, request_id)
-                actual = metadata["model"]
-            elif mode in stream_parsers:
-                response, metadata = stream_parsers[mode](result.stdout, model)
-                actual = metadata["model"]
-            else:
-                envelope = json.loads(result.stdout)
-                actual = attest_model(envelope, self.config["attestation"], model)
-            if mode == "claude-json":
-                if envelope.get("is_error"):
-                    raise GateError("provider reported an error")
-                response = envelope.get("structured_output")
-                if response is None:
-                    response = json_object(envelope["result"])
-            elif mode == "gemini-json":
-                response = json.loads(envelope["response"])
-            elif mode not in stream_parsers and mode != "codex-data-only":
-                response = envelope
+            response, metadata = parse_codex_data_only(result.stdout, model, request_id)
+            actual = metadata["model"]
             if not isinstance(response, dict):
                 raise ValueError()
         except (ValueError, KeyError, TypeError) as exc:
@@ -350,6 +317,8 @@ class VerificationRunner:
 
     def run(self, ids: list[str], worktree: Path, *, expected_files=None) -> list[dict]:
         runtime_bytes = validate_capability(self.sandbox, "verification")
+        if self.sandbox.get("kind") != "docker":
+            raise GateError("only exact-packet Docker verification is admitted")
         results = []
         for test_id in sorted(set(ids)):
             if test_id not in self.commands:
@@ -357,20 +326,11 @@ class VerificationRunner:
             command = self.commands[test_id]
             if not isinstance(command, list) or not command:
                 raise GateError("invalid approved verification command")
-            if self.sandbox.get("kind") == "docker":
-                if not self.read_set:
-                    raise GateError("Docker verification requires an exact source packet")
-                DockerSandbox = _verified_docker_class(runtime_bytes)
-                result = DockerSandbox(self.sandbox, self.read_set, cancelled=self.cancelled).run(
-                    command, worktree, test_id, expected_files=expected_files)
-            else:
-                argv = [x.replace("{worktree}", str(worktree)) for x in self.sandbox["argv"]] + command
-                result = execute(
-                    argv, cwd=worktree, timeout=self.sandbox.get("timeout_seconds", 600),
-                    cancelled=self.cancelled,
-                    expected_executable_sha256=self.sandbox.get("proof", {}).get("executable_sha256"),
-                    expected_runtime_sha256=self.sandbox.get("proof", {}).get("runtime_files", {}),
-                )
+            if not self.read_set:
+                raise GateError("Docker verification requires an exact source packet")
+            DockerSandbox = _verified_docker_class(runtime_bytes)
+            result = DockerSandbox(self.sandbox, self.read_set, cancelled=self.cancelled).run(
+                command, worktree, test_id, expected_files=expected_files)
             # The runner is confined; diagnostic text remains untrusted data.
             # Credential-shaped output is refused rather than copied to a model.
             diagnostic = safe_text((result.stdout + "\n" + result.stderr)[:8000])
