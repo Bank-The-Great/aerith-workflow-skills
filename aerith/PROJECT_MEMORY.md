@@ -40,6 +40,8 @@
   prohibit implicit image pulls and override image ENTRYPOINT with approved argv.
 - Requested-model metadata is not automatically observed-response metadata.
   Validate each provider's envelope provenance instead of inventing attestation.
+- A provenance field names the tier of evidence it rests on. Never put recorded
+  or echoed evidence in a field whose name claims the answering model.
 - Pin the runtime's entire executable closure, not just a launcher or bundle.
   Source-built CLI provenance does not by itself prove tool-less containment.
 
@@ -161,3 +163,11 @@
   format and sweep them on writable-store startup only after an exclusive file
   handle, reparse check and parent-object identity check; an active writer's
   sharing lock makes recovery skip its live temporary.
+- 2026-09-15: The first live call of the source-built Codex data-only worker
+  failed closed with `model_metadata_missing`: the ChatGPT backend sends no
+  `openai-model` header on a normal response, so header-only provenance could
+  never pass live. The worker now names two tiers, and `parse_codex_data_only`
+  accepts `evidenced_model` plus `model_evidence` in place of `provider_model`.
+  Its `recorded_response_model` source says "without reroute signal", because a
+  response object that records the requested model does not prove which model
+  answered. Host admission pins were not changed.

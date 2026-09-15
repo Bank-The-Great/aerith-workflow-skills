@@ -28,9 +28,9 @@ def gemini():
                        "tool_call_chunks": 0, "completed": True}]}}
 
 
-def codex_data_only():
+def codex_data_only(tier="recorded_response_model"):
     common = {"request_id": "request-1", "response_id": "response-1",
-              "requested_model": "chosen", "provider_model": "chosen"}
+              "requested_model": "chosen", "evidenced_model": "chosen", "model_evidence": tier}
     return [{"type": "response_metadata", **common},
             {"type": "result", **common, "output": {"ok": True}}]
 
@@ -46,25 +46,43 @@ class ProvenanceTests(unittest.TestCase):
             self.assertEqual(result[1]["session_id"], "fresh")
 
     def test_valid_data_only_codex(self):
-        output, metadata = parse_codex_data_only(
-            "\n".join(json.dumps(event) for event in codex_data_only()), "chosen", "request-1")
-        self.assertEqual(output, {"ok": True})
-        self.assertEqual(metadata["model"], "chosen")
-        self.assertEqual(metadata["response_ids"], ["response-1"])
+        for tier, source in (("provider_response_header", "provider-response.headers"),
+                             ("recorded_response_model",
+                              "provider-response.recorded-model-without-reroute-signal")):
+            with self.subTest(tier=tier):
+                output, metadata = parse_codex_data_only(
+                    "\n".join(json.dumps(event) for event in codex_data_only(tier)), "chosen", "request-1")
+                self.assertEqual(output, {"ok": True})
+                self.assertEqual(metadata["model"], "chosen")
+                self.assertEqual(metadata["response_ids"], ["response-1"])
+                self.assertEqual(metadata["model_evidence"], tier)
+                self.assertEqual(metadata["source"], source)
 
     def test_data_only_codex_fails_closed_on_mixed_or_incomplete_evidence(self):
         cases = []
         for index, field, value in (
-            (0, "provider_model", "other"), (1, "requested_model", "other"),
-            (1, "request_id", "other"), (1, "response_id", "other"),
+            (0, "evidenced_model", "other"), (1, "evidenced_model", "other"),
+            (1, "requested_model", "other"), (1, "request_id", "other"), (1, "response_id", "other"),
             (0, "response_id", "bad\nidentity"), (1, "output", []),
+            (0, "model_evidence", "served_model"), (1, "model_evidence", "provider_response_header"),
+            (0, "model_evidence", ["recorded_response_model"]), (1, "model_evidence", None),
         ):
             events = copy.deepcopy(codex_data_only())
             events[index][field] = value
             cases.append(events)
         extra = codex_data_only()
         extra[0]["untrusted"] = True
-        cases.extend([extra, codex_data_only()[:1], list(reversed(codex_data_only())),
+        # The earlier schema named recorded evidence a provider model; it is refused, and so is
+        # a stream that carries that field beside the new ones on both records.
+        legacy = codex_data_only()
+        for record in legacy:
+            record["provider_model"] = record.pop("evidenced_model")
+            record.pop("model_evidence")
+        both_fields = codex_data_only()
+        for record in both_fields:
+            record["provider_model"] = "chosen"
+        cases.extend([extra, legacy, both_fields, codex_data_only("served_model"), codex_data_only(""),
+                      codex_data_only()[:1], list(reversed(codex_data_only())),
                       [{"type": "error", "code": "provider_failure"}]])
         for events in cases:
             with self.subTest(events=events), self.assertRaises(GateError):

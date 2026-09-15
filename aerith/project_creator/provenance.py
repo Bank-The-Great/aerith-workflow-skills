@@ -4,6 +4,12 @@ import re
 
 from .contracts import GateError
 
+# Evidence tiers of the data-only Codex worker and the source each one may claim.
+DATA_ONLY_EVIDENCE_SOURCES = {
+    "provider_response_header": "provider-response.headers",
+    "recorded_response_model": "provider-response.recorded-model-without-reroute-signal",
+}
+
 
 def identifier(value):
     return isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._:/-]{1,160}", value) is not None
@@ -100,28 +106,39 @@ def parse_codex_provenance(text, requested):
 
 
 def parse_codex_data_only(text, requested, request_id):
-    """Read the two-record stream from the lifecycle-free Codex worker."""
+    """Read the two-record stream from the lifecycle-free Codex worker.
+
+    The worker names its evidence tier. `provider_response_header` means the provider
+    named the answering model. `recorded_response_model` means only that the response
+    object records the requested model and no reroute signal was sent; it never
+    proves which model generated the output, and the returned source says so.
+    """
     events = [json.loads(line) for line in text.splitlines() if line.strip()]
     if len(events) != 2 or not all(isinstance(event, dict) for event in events):
         raise GateError("Codex data-only worker needs exactly two records")
     metadata, result = events
-    if set(metadata) != {"type", "request_id", "response_id", "requested_model", "provider_model"}:
+    if set(metadata) != {"type", "request_id", "response_id", "requested_model", "evidenced_model",
+                         "model_evidence"}:
         raise GateError("Codex data-only metadata is malformed")
     if set(result) != set(metadata) | {"output"}:
         raise GateError("Codex data-only result is malformed")
     if metadata.get("type") != "response_metadata" or result.get("type") != "result":
         raise GateError("Codex data-only record order is invalid")
     for record in events:
+        tier = record.get("model_evidence")
         if (record.get("request_id") != request_id or record.get("requested_model") != requested
-                or record.get("provider_model") != requested
+                or record.get("evidenced_model") != requested
+                or not isinstance(tier, str) or tier not in DATA_ONLY_EVIDENCE_SOURCES
                 or not identifier(record.get("response_id"))):
             raise GateError("Codex data-only identity or model evidence differs from the request")
-    if metadata["response_id"] != result["response_id"] or not isinstance(result.get("output"), dict):
-        raise GateError("Codex data-only response identity or output is invalid")
+    if (metadata["response_id"] != result["response_id"] or metadata["model_evidence"] != result["model_evidence"]
+            or not isinstance(result.get("output"), dict)):
+        raise GateError("Codex data-only response identity, evidence or output is invalid")
     return result["output"], {
         "model": requested,
         "request_id": request_id,
         "response_ids": [result["response_id"]],
-        "source": "provider-response.headers",
+        "model_evidence": result["model_evidence"],
+        "source": DATA_ONLY_EVIDENCE_SOURCES[result["model_evidence"]],
         "runtime": "aerith-data-only",
     }

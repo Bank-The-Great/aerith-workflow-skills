@@ -140,7 +140,8 @@ class ProviderEdges(unittest.TestCase):
         packet = {}
         request_id = digest(packet)
         common = {"request_id": request_id, "response_id": "response-1",
-                  "requested_model": "chosen", "provider_model": "chosen"}
+                  "requested_model": "chosen", "evidenced_model": "chosen",
+                  "model_evidence": "provider_response_header"}
         response = "\n".join(json.dumps(x) for x in (
             {"type": "response_metadata", **common},
             {"type": "result", **common,
@@ -168,7 +169,8 @@ class ProviderEdges(unittest.TestCase):
                   "output_contract": {"changes": []}}
         request_id = digest(packet)
         common = {"request_id": request_id, "response_id": "response-1",
-                  "requested_model": "chosen", "provider_model": "chosen"}
+                  "requested_model": "chosen", "evidenced_model": "chosen",
+                  "model_evidence": "provider_response_header"}
         stream = "\n".join(json.dumps(x) for x in (
             {"type": "response_metadata", **common},
             {"type": "result", **common,
@@ -198,7 +200,8 @@ class ProviderEdges(unittest.TestCase):
         packet = {"instructions": "controller-only instructions"}
         request_id = digest(packet)
         common = {"request_id": request_id, "response_id": "response-1",
-                  "requested_model": "chosen", "provider_model": "chosen"}
+                  "requested_model": "chosen", "evidenced_model": "chosen",
+                  "model_evidence": "provider_response_header"}
         stream = "\n".join(json.dumps(x) for x in (
             {"type": "response_metadata", **common},
             {"type": "result", **common, "output": {"wrong_stage_shape": True}},
@@ -296,7 +299,8 @@ class ProviderEdges(unittest.TestCase):
         packet = {"instructions": "bounded"}
         request_id = digest(packet)
         common = {"request_id": request_id, "response_id": "response-1",
-                  "requested_model": "chosen", "provider_model": "chosen"}
+                  "requested_model": "chosen", "evidenced_model": "chosen",
+                  "model_evidence": "provider_response_header"}
         response = "\n".join(json.dumps(x) for x in (
             {"type": "response_metadata", **common},
             {"type": "result", **common,
