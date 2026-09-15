@@ -18,6 +18,33 @@ from .provenance import parse_codex_data_only
 _HOST_CAPABILITIES = {}
 _VALIDATED_RUNTIME_LOCK = threading.RLock()
 _ADMITTED_PROVIDER_OUTPUTS = {"codex-data-only"}
+# The evidence tiers each data-only attestation mode admits. `recorded-response-model`
+# claims only that the response recorded the requested model; header evidence is
+# stronger and meets that claim too. The header mode never admits recorded evidence.
+_ADMITTED_EVIDENCE = {
+    "provider-response-header": {"provider_response_header"},
+    "recorded-response-model": {"provider_response_header", "recorded_response_model"},
+}
+_RECORDED_MODE = "recorded-response-model"
+
+
+def _attestation_mode(config: dict):
+    """The data-only attestation mode, or None unless the block is exactly one known mode."""
+    attestation = config.get("attestation")
+    if (isinstance(attestation, dict) and set(attestation) == {"mode"}
+            and isinstance(attestation["mode"], str) and attestation["mode"] in _ADMITTED_EVIDENCE):
+        return attestation["mode"]
+    return None
+
+
+def _recorded_mode_limits(proof: dict) -> dict:
+    """The limits a recorded-model capability must state, exactly and truthfully typed."""
+    limits = proof.get("limits")
+    if (not isinstance(limits, dict) or set(limits) != {"answering_model_proven", "echo_tested"}
+            or limits["answering_model_proven"] is not False
+            or not isinstance(limits["echo_tested"], bool)):
+        raise GateError("recorded-model capability must state its limits")
+    return limits
 
 
 def configure_host_capabilities(approved):
@@ -106,6 +133,8 @@ def validate_capability(config: dict, purpose: str, *, environment=None):
                                   or config.get("loader_policy") != "pe-dependent-load-system32"):
         raise GateError("provider is not an admitted data-only worker")
     proof = config.get("proof", {})
+    recorded_limits = (_recorded_mode_limits(proof)
+                       if purpose == "provider" and _attestation_mode(config) == _RECORDED_MODE else None)
     if purpose == "provider" and proof.get("environment_hash") != digest(provider_environment(config) if environment is None else environment):
         raise GateError("provider auth-home/runtime environment changed after host review")
     expected = digest({k: v for k, v in config.items() if k != "proof"})
@@ -154,6 +183,11 @@ def validate_capability(config: dict, purpose: str, *, environment=None):
                      and measured_at == proof.get("checked_at")
                      and measured.get("executable_sha256") == proof.get("executable_sha256")
                      and measured.get("runtime_files") == proof.get("runtime_files", {}))
+            if valid and recorded_limits is not None and case == "model_attestation":
+                # The stated limits must be the measured ones, and a withdrawn tier admits nothing.
+                measurement = measured_case["measurement"]
+                valid = (measurement.get("recorded_tier_withdrawn") is False
+                         and measurement.get("unserved_echo_observable") is recorded_limits["echo_tested"])
         except ValueError:
             valid = False
         if not valid:
@@ -274,7 +308,7 @@ class CLIProvider:
         if (not isinstance(template, list) or len(template) != 3
                 or template[1:] != ["--model", "{model}"]
                 or not isinstance(template[0], str) or Path(template[0]).suffix.lower() != ".exe"
-                or self.config.get("attestation") != {"mode": "provider-response-header"}):
+                or _attestation_mode(self.config) is None):
             raise GateError("data-only provider requires one reviewed native executable")
         env = provider_environment(self.config)
         validate_capability(self.config, "provider", environment=env)
@@ -317,17 +351,20 @@ class CLIProvider:
                 raise ValueError()
         except (ValueError, KeyError, TypeError) as exc:
             raise GateError("provider did not return the required JSON object") from exc
-        # The only admitted attestation mode is provider-response-header, so only header
-        # evidence may be attested. Recorded evidence does not name the answering model;
-        # admitting it needs its own mode and an operator ruling.
-        if metadata.get("model_evidence") != "provider_response_header":
+        # The header mode admits only header evidence. Recorded evidence does not name the
+        # answering model, so it is admitted only under its own mode (operator ruling D6,
+        # 2026-09-15), and its audit never calls the model attested.
+        mode = _attestation_mode(self.config)
+        if metadata.get("model_evidence") not in _ADMITTED_EVIDENCE[mode]:
             self.audit("provider_failure", {"vendor": self.name, "reason": "model_evidence_not_admitted",
                        "model_evidence": metadata.get("model_evidence")})
             raise GateError("provider result rests on recorded model evidence, which the header attestation mode does not admit")
         response = validate_output(stage, response)
         safe_text(json.dumps(response, ensure_ascii=False))
-        self.audit("provider_end", {"vendor": self.name, "model_requested": model,
-                   "model_attested": actual, "metadata": metadata, "elapsed_seconds": result.elapsed, "output_hash": digest(response)})
+        claim = ({"model_attested": actual} if mode == "provider-response-header"
+                 else {"model_recorded": actual, "attestation_mode": mode})
+        self.audit("provider_end", {"vendor": self.name, "model_requested": model, **claim,
+                   "metadata": metadata, "elapsed_seconds": result.elapsed, "output_hash": digest(response)})
         return response
 
 

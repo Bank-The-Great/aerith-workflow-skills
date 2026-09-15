@@ -205,7 +205,12 @@ class ProviderEdges(unittest.TestCase):
                   "attestation": {"mode": "provider-response-header"},
                   "argv": [sys.executable, "--model", "{model}"],
                   "proof": {"executable_sha256": "a" * 64}}
-        for tier, admitted in (("provider_response_header", True), ("recorded_response_model", False)):
+        recorded_config = config | {"attestation": {"mode": "recorded-response-model"}}
+        cases = (("provider-response-header", "provider_response_header", True),
+                 ("provider-response-header", "recorded_response_model", False),
+                 ("recorded-response-model", "provider_response_header", True),
+                 ("recorded-response-model", "recorded_response_model", True))
+        for mode, tier, admitted in cases:
             common = {"request_id": request_id, "response_id": "response-1",
                       "requested_model": "chosen", "evidenced_model": "chosen", "model_evidence": tier}
             stream = "\n".join(json.dumps(x) for x in (
@@ -214,15 +219,24 @@ class ProviderEdges(unittest.TestCase):
                  "output": {"changes": [], "summary": "nothing", "questions": []}},
             ))
             events = []
-            with self.subTest(tier=tier), patch("project_creator.providers.validate_capability"), \
+            chosen_config = config if mode == "provider-response-header" else recorded_config
+            with self.subTest(mode=mode, tier=tier), patch("project_creator.providers.validate_capability"), \
                     patch("project_creator.providers.execute", return_value=Result(0, stream, "", 0.1)):
-                provider = CLIProvider("codex", config, audit=lambda kind, payload: events.append((kind, payload)))
+                provider = CLIProvider("codex", chosen_config, audit=lambda kind, payload: events.append((kind, payload)))
                 if admitted:
                     self.assertEqual(provider.invoke("implement", "chosen", packet, Path.cwd())["summary"], "nothing")
                     end = [payload for kind, payload in events if kind == "provider_end"]
                     self.assertEqual(len(end), 1)
-                    self.assertEqual(end[0]["model_attested"], "chosen")
-                    self.assertEqual(end[0]["metadata"]["model_evidence"], "provider_response_header")
+                    self.assertEqual(end[0]["metadata"]["model_evidence"], tier)
+                    if mode == "provider-response-header":
+                        self.assertEqual(end[0]["model_attested"], "chosen")
+                        self.assertNotIn("model_recorded", end[0])
+                    else:
+                        # Under the recorded mode no event calls the model attested, even
+                        # for a header-tier result.
+                        self.assertEqual((end[0]["model_recorded"], end[0]["attestation_mode"]),
+                                         ("chosen", "recorded-response-model"))
+                        self.assertFalse(any("model_attested" in payload for _, payload in events))
                 else:
                     with self.assertRaisesRegex(GateError, "recorded model evidence"):
                         provider.invoke("implement", "chosen", packet, Path.cwd())
@@ -231,6 +245,29 @@ class ProviderEdges(unittest.TestCase):
                     self.assertFalse(any("model_attested" in payload for _, payload in events))
                     self.assertIn(("provider_failure", {"vendor": "codex", "reason": "model_evidence_not_admitted",
                                                         "model_evidence": "recorded_response_model"}), events)
+        # An attestation block that is not exactly one known mode is refused before launch.
+        for attestation in ({"mode": "recorded-response-model", "echo_tested": False}, {"mode": "served-model"},
+                            {"mode": ["recorded-response-model"]}, {}, None):
+            launched = []
+            with self.subTest(attestation=attestation), patch("project_creator.providers.validate_capability"), \
+                    patch("project_creator.providers.execute", side_effect=lambda *a, **k: launched.append(a)):
+                provider = CLIProvider("codex", config | {"attestation": attestation}, audit=lambda *a: None)
+                with self.assertRaisesRegex(GateError, "one reviewed native executable"):
+                    provider.invoke("implement", "chosen", packet, Path.cwd())
+                self.assertEqual(launched, [])
+
+    def test_recorded_mode_capability_states_exact_limits(self):
+        from project_creator import providers
+        for limits in ({"answering_model_proven": False, "echo_tested": False},
+                       {"answering_model_proven": False, "echo_tested": True}):
+            self.assertEqual(providers._recorded_mode_limits({"limits": limits}), limits)
+        for limits in (None, {}, {"answering_model_proven": False},
+                       {"answering_model_proven": True, "echo_tested": False},
+                       {"answering_model_proven": 0, "echo_tested": False},
+                       {"answering_model_proven": False, "echo_tested": 1},
+                       {"answering_model_proven": False, "echo_tested": False, "model": "chosen"}):
+            with self.subTest(limits=limits), self.assertRaisesRegex(GateError, "must state its limits"):
+                providers._recorded_mode_limits({} if limits is None else {"limits": limits})
 
     def test_data_only_codex_rejects_wrong_stage_shape_locally(self):
         packet = {"instructions": "controller-only instructions"}

@@ -177,3 +177,13 @@
   tier other than `provider_response_header` under that mode, records the refusal as a
   `provider_failure` event naming the tier, and never writes an attested model for it.
   Admitting recorded evidence needs its own named mode and an operator ruling.
+- 2026-09-15: The operator admitted recorded evidence under its own mode after live run 2.
+  The data-only provider now accepts `recorded-response-model` (header-tier and
+  recorded-tier results) and audits `model_recorded` with the mode, never
+  `model_attested`; the header mode is unchanged. `validate_capability` refuses a
+  recorded-mode record unless `proof.limits` is exactly `answering_model_proven: false`
+  and a boolean `echo_tested` equal to the evidence's `unserved_echo_observable`, and
+  refuses evidence showing the recorded tier withdrawn. Forward rule: an attestation
+  mode lives in the configuration that the evidence hashes, so a weaker claim cannot be
+  relabelled onto old evidence; it needs a new run under that mode, and limits that
+  depend on the run's outcome belong in the proof, checked against the evidence.
