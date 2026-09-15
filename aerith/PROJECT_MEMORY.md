@@ -194,3 +194,9 @@
   call on header evidence with none on the recorded tier and no withdrawal. The package's own
   suite tests both modes against a real evidence file. Forward rule: a check added for one
   mode is added for every mode the same function admits, strongest first.
+- 2026-09-15: Adding the header mode to the existing rewrapped-evidence test made it pass for the
+  wrong reason: its model attestation stub was now refused by the new binding with the same message,
+  so deleting the evidence time and executable checks survived every suite. The binding test now
+  changes one evidence-to-proof field at a time against evidence the attestation check admits, each
+  with a mutant. Forward rule: when a new guard sits in front of an existing test's target, give the
+  test input the new guard admits, or the test stops testing its target.

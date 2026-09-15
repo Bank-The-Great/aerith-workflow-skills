@@ -538,7 +538,7 @@ class ProviderEdges(unittest.TestCase):
         header_run = recorded_run | {"provider_response_header_calls": 4, "recorded_response_model_calls": 0}
         honest = {"answering_model_proven": False, "echo_tested": False}
 
-        def check(attestation, measurement, limits=None):
+        def check(attestation, measurement, limits=None, evidence_changes=None, proof_changes=None):
             with tempfile.TemporaryDirectory() as tmp:
                 evidence = Path(tmp) / "evidence.json"
                 cfg = {"argv": [sys.executable], "output": "codex-data-only",
@@ -554,6 +554,7 @@ class ProviderEdges(unittest.TestCase):
                           "cases": {case: {"passed": True, "measurement": (
                               measurement if case == "model_attestation" else {"fixture": True})}
                               for case in cases}}
+                record |= evidence_changes or {}
                 evidence.write_text(json.dumps(record))
                 evidence_hash = digest(evidence.read_bytes())
                 cfg["proof"] = {"schema_version": 1, "probe_harness_sha256": "fixture",
@@ -565,6 +566,7 @@ class ProviderEdges(unittest.TestCase):
                                                  "evidence_sha256": evidence_hash} for case in cases}}
                 if limits is not None:
                     cfg["proof"]["limits"] = limits
+                cfg["proof"] |= proof_changes or {}
                 with patch.dict("project_creator.providers._HOST_CAPABILITIES", {digest(cfg): "provider"}):
                     try:
                         validate_capability(cfg, "provider", environment=provider_environment(cfg))
@@ -594,6 +596,22 @@ class ProviderEdges(unittest.TestCase):
              substantiate),
             ("header mode, tier withdrawn", check(header, header_run | {"recorded_tier_withdrawn": True}), substantiate),
             ("no attestation", check(None, header_run), "provider capability names no admitted attestation mode"),
+            ("header mode, recorded-mode limits stated", check(header, header_run, honest),
+             "header-mode capability must not state recorded-mode limits"),
+            # Each binding between the evidence and the proof, changed alone against evidence the
+            # attestation check admits, so no other guard can answer for it.
+            ("evidence from an older run", check(header, header_run,
+                                                 evidence_changes={"checked_at": "2000-01-01T00:00:00+00:00"}),
+             substantiate),
+            ("evidence from another executable", check(header, header_run,
+                                                       evidence_changes={"executable_sha256": "0" * 64}),
+             substantiate),
+            ("evidence for another configuration", check(recorded, recorded_run, honest,
+                                                         evidence_changes={"configuration_hash": "c" * 64}),
+             substantiate),
+            ("proof for another configuration", check(recorded, recorded_run, honest,
+                                                      proof_changes={"configuration_hash": "c" * 64}),
+             "provider configuration has no matching containment proof"),
         )
         for label, actual, expected in expectations:
             with self.subTest(label):

@@ -154,6 +154,10 @@ def validate_capability(config: dict, purpose: str, *, environment=None):
     if purpose == "provider" and mode is None:
         raise GateError("provider capability names no admitted attestation mode")
     recorded_limits = _recorded_mode_limits(proof) if mode == _RECORDED_MODE else None
+    if mode is not None and mode != _RECORDED_MODE and "limits" in proof:
+        # Only the recorded mode's limits are checked, so no other mode may carry a block that
+        # would read as verified.
+        raise GateError("header-mode capability must not state recorded-mode limits")
     if purpose == "provider" and proof.get("environment_hash") != digest(provider_environment(config) if environment is None else environment):
         raise GateError("provider auth-home/runtime environment changed after host review")
     expected = digest({k: v for k, v in config.items() if k != "proof"})
