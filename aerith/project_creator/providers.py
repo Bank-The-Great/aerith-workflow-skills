@@ -47,6 +47,23 @@ def _recorded_mode_limits(proof: dict) -> dict:
     return limits
 
 
+def _attestation_substantiated(mode: str, measurement: dict, limits) -> bool:
+    """Whether the measured model attestation supports the record's mode.
+
+    No mode admits evidence that withdrew the recorded tier. The recorded mode's stated
+    limits must be the measured ones. The header mode needs every evidenced positive call
+    to have used header evidence, so it can never be relabelled onto recorded evidence.
+    """
+    if measurement.get("recorded_tier_withdrawn") is not False:
+        return False
+    if mode == _RECORDED_MODE:
+        return measurement.get("unserved_echo_observable") is limits["echo_tested"]
+    calls = measurement.get("evidenced_positive_calls")
+    return (type(calls) is int and calls > 0
+            and measurement.get("provider_response_header_calls") == calls
+            and measurement.get("recorded_response_model_calls") == 0)
+
+
 def configure_host_capabilities(approved):
     """Host-bootstrap-only authority, never supplied by model/run configuration.
 
@@ -133,8 +150,10 @@ def validate_capability(config: dict, purpose: str, *, environment=None):
                                   or config.get("loader_policy") != "pe-dependent-load-system32"):
         raise GateError("provider is not an admitted data-only worker")
     proof = config.get("proof", {})
-    recorded_limits = (_recorded_mode_limits(proof)
-                       if purpose == "provider" and _attestation_mode(config) == _RECORDED_MODE else None)
+    mode = _attestation_mode(config) if purpose == "provider" else None
+    if purpose == "provider" and mode is None:
+        raise GateError("provider capability names no admitted attestation mode")
+    recorded_limits = _recorded_mode_limits(proof) if mode == _RECORDED_MODE else None
     if purpose == "provider" and proof.get("environment_hash") != digest(provider_environment(config) if environment is None else environment):
         raise GateError("provider auth-home/runtime environment changed after host review")
     expected = digest({k: v for k, v in config.items() if k != "proof"})
@@ -183,11 +202,8 @@ def validate_capability(config: dict, purpose: str, *, environment=None):
                      and measured_at == proof.get("checked_at")
                      and measured.get("executable_sha256") == proof.get("executable_sha256")
                      and measured.get("runtime_files") == proof.get("runtime_files", {}))
-            if valid and recorded_limits is not None and case == "model_attestation":
-                # The stated limits must be the measured ones, and a withdrawn tier admits nothing.
-                measurement = measured_case["measurement"]
-                valid = (measurement.get("recorded_tier_withdrawn") is False
-                         and measurement.get("unserved_echo_observable") is recorded_limits["echo_tested"])
+            if valid and mode is not None and case == "model_attestation":
+                valid = _attestation_substantiated(mode, measured_case["measurement"], recorded_limits)
         except ValueError:
             valid = False
         if not valid:

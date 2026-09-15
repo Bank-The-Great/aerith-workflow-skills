@@ -187,3 +187,10 @@
   mode lives in the configuration that the evidence hashes, so a weaker claim cannot be
   relabelled onto old evidence; it needs a new run under that mode, and limits that
   depend on the run's outcome belong in the proof, checked against the evidence.
+- 2026-09-15: Review of that change found the stronger mode left unbound: the recorded mode's
+  record was checked against its evidence, but a `provider-response-header` record built on
+  recorded evidence (zero header calls) passed `validate_capability`. The check now requires an
+  admitted mode for every provider record and, under the header mode, every evidenced positive
+  call on header evidence with none on the recorded tier and no withdrawal. The package's own
+  suite tests both modes against a real evidence file. Forward rule: a check added for one
+  mode is added for every mode the same function admits, strongest first.

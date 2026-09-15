@@ -196,7 +196,7 @@ class ProviderEdges(unittest.TestCase):
         self.assertEqual(execute.call_args.kwargs["expected_executable_sha256"], "a" * 64)
         self.assertEqual(execute.call_args.kwargs["expected_runtime_sha256"], {})
 
-    def test_data_only_codex_attests_only_header_evidence(self):
+    def test_data_only_codex_admits_evidence_by_attestation_mode(self):
         packet = {"instructions": "controller-only instructions"}
         request_id = digest(packet)
         config = {"output": "codex-data-only", "auth_mode": "codex-subscription",
@@ -503,7 +503,8 @@ class ProviderEdges(unittest.TestCase):
             evidence = Path(tmp) / "evidence.json"
             cfg = {"argv": [sys.executable], "output": "codex-data-only",
                    "filesystem_scope": "codex-home-auth-only",
-                   "loader_policy": "pe-dependent-load-system32"}
+                   "loader_policy": "pe-dependent-load-system32",
+                   "attestation": {"mode": "provider-response-header"}}
             current = datetime.now(timezone.utc).isoformat()
             cases = ("fresh_context", "tools_disabled", "ambient_not_observed_in_output", "child_cleanup",
                      "model_attestation", "subscription_auth_only",
@@ -526,6 +527,77 @@ class ProviderEdges(unittest.TestCase):
             with patch.dict("project_creator.providers._HOST_CAPABILITIES", {digest(cfg): "provider"}):
                 with self.assertRaisesRegex(GateError, "does not substantiate"):
                     validate_capability(cfg, "provider", environment=provider_environment(cfg))
+
+    def test_capability_binds_its_attestation_mode_to_the_measured_attestation(self):
+        cases = ("fresh_context", "tools_disabled", "ambient_not_observed_in_output", "child_cleanup",
+                 "model_attestation", "subscription_auth_only",
+                 "dependent_load_flags_system32", "delay_imports_absent", "imports_allowlisted")
+        recorded_run = {"evidenced_positive_calls": 4, "provider_response_header_calls": 0,
+                        "recorded_response_model_calls": 4, "recorded_tier_withdrawn": False,
+                        "unserved_echo_observable": False}
+        header_run = recorded_run | {"provider_response_header_calls": 4, "recorded_response_model_calls": 0}
+        honest = {"answering_model_proven": False, "echo_tested": False}
+
+        def check(attestation, measurement, limits=None):
+            with tempfile.TemporaryDirectory() as tmp:
+                evidence = Path(tmp) / "evidence.json"
+                cfg = {"argv": [sys.executable], "output": "codex-data-only",
+                       "filesystem_scope": "codex-home-auth-only",
+                       "loader_policy": "pe-dependent-load-system32"}
+                if attestation is not None:
+                    cfg["attestation"] = attestation
+                current = datetime.now(timezone.utc).isoformat()
+                executable = digest(Path(sys.executable).read_bytes())
+                record = {"schema_version": 1, "purpose": "provider", "configuration_hash": digest(cfg),
+                          "probe_harness_sha256": "fixture", "checked_at": current,
+                          "executable_sha256": executable, "runtime_files": {},
+                          "cases": {case: {"passed": True, "measurement": (
+                              measurement if case == "model_attestation" else {"fixture": True})}
+                              for case in cases}}
+                evidence.write_text(json.dumps(record))
+                evidence_hash = digest(evidence.read_bytes())
+                cfg["proof"] = {"schema_version": 1, "probe_harness_sha256": "fixture",
+                                "checked_at": current, "configuration_hash": digest(cfg),
+                                "executable_sha256": executable,
+                                "environment_hash": digest(provider_environment(cfg)),
+                                "runtime_files": {}, "evidence_files": {evidence_hash: str(evidence)},
+                                "cases": {case: {"expected": True, "observed": True, "passed": True,
+                                                 "evidence_sha256": evidence_hash} for case in cases}}
+                if limits is not None:
+                    cfg["proof"]["limits"] = limits
+                with patch.dict("project_creator.providers._HOST_CAPABILITIES", {digest(cfg): "provider"}):
+                    try:
+                        validate_capability(cfg, "provider", environment=provider_environment(cfg))
+                        return "admitted"
+                    except GateError as exc:
+                        return str(exc)
+
+        recorded = {"mode": "recorded-response-model"}
+        header = {"mode": "provider-response-header"}
+        substantiate = "retained evidence does not substantiate the claimed capability"
+        expectations = (
+            ("recorded mode, honest limits", check(recorded, recorded_run, honest), "admitted"),
+            ("recorded mode, header run", check(recorded, header_run, honest), "admitted"),
+            ("recorded mode, echo flipped", check(recorded, recorded_run, honest | {"echo_tested": True}), substantiate),
+            ("recorded mode, tier withdrawn", check(recorded, recorded_run | {"recorded_tier_withdrawn": True}, honest),
+             substantiate),
+            ("recorded mode, proof overstated", check(recorded, recorded_run, honest | {"answering_model_proven": True}),
+             "recorded-model capability must state its limits"),
+            ("header mode, header run", check(header, header_run), "admitted"),
+            ("header mode, recorded run", check(header, recorded_run), substantiate),
+            ("header mode, one call without a header", check(header, header_run | {"provider_response_header_calls": 3}),
+             substantiate),
+            ("header mode, a recorded call counted", check(header, header_run | {"recorded_response_model_calls": 1}),
+             substantiate),
+            ("header mode, no evidenced call", check(header, header_run | {"evidenced_positive_calls": 0,
+                                                                           "provider_response_header_calls": 0}),
+             substantiate),
+            ("header mode, tier withdrawn", check(header, header_run | {"recorded_tier_withdrawn": True}), substantiate),
+            ("no attestation", check(None, header_run), "provider capability names no admitted attestation mode"),
+        )
+        for label, actual, expected in expectations:
+            with self.subTest(label):
+                self.assertEqual(actual, expected)
 
     def test_self_forged_receipt_does_not_grant_host_authority(self):
         cfg = docker_config() | {"proof": {"passed": True, "cases": {"all": True}}}
