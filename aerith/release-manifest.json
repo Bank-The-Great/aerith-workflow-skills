@@ -14,7 +14,7 @@
     ".gitignore": "9a41153bdf35381f85b94adbf0c01ebd0fdaed15e56ab7e7fd2352fe2d4e1b6d",
     "AGENTS.md": "8eaacf5185676a13fdf73b7da2fe5cadba0dfb7051b2e32b5243d089590227b5",
     "LICENSE": "2ba4f3a7418d62d3b9cafc0a8f57f8eefee235f626ad380c658e21e3fadc682b",
-    "PROJECT_MEMORY.md": "19c326933bdfed1074be820c38981c1eb66f413c6c096065b7d2ca23f36c7039",
+    "PROJECT_MEMORY.md": "f7427eeda64d3b62a6cd7bd466ba6a9a4fc348011ff9c3c33c426515e81dc9dc",
     "PUBLIC_FILES.json": "179211a1f9539bea76d3e726642fe6c029a60a36f4dd228fff483bf09faf095d",
     "README.md": "c43528171e845c9ceba61a5b88b9189c4be5174bd4a515d8ff6097c4b8056436",
     "build_release.py": "cc3386e1456966e6e86129735f78501a2519e414077ba935dc0bd0ad4eb9de71",
@@ -31,7 +31,7 @@
     "project_creator/output_schemas.py": "eb09cb6f90dfd7885e14731dddf529274f92474a80312290a3b495334ce8560c",
     "project_creator/processes.py": "c79298cb5d54e6e96b55092c876ee1d6067ebd35406ae7543bb9379aaa9e09f0",
     "project_creator/provenance.py": "67b007136e16d47c572a2059cf6b6b2a7d7f33021b94b68c4b7585a2c1ea81ad",
-    "project_creator/providers.py": "5e52b2e7195cb94f3a72e83248a2f7fc3962ac85674c968cf4a90315e351da83",
+    "project_creator/providers.py": "f93bba87185ae47039036b662ed3a26e76fcf5919cf86a01b6f02f03d49ab524",
     "project_creator/store.py": "5311652d6dfd6410e20e3841f143f3272bebce7918ca6ccaf14819ccd432aaa2",
     "project_creator/workspace.py": "9474473125e992c012fbc94805f175614615aa78eb6f64d476cc9a97029696be",
     "references/defect-review.md": "fbf4cf9a834e2f11eb86fdf62993043efc657367e6a9c0e157be63caa65bfc06",
@@ -42,7 +42,7 @@
     "skills/to-spec/SKILL.md": "755491154f83e7e4019bec41ba0cc1385599f6869705c542d7d860efaf429819",
     "skills/to-tickets/SKILL.md": "1e7944c84a6955a14b29f32b0d3c4964815fd11d76bb73643255bace6ad4790a",
     "tests/test_controller.py": "a25e23b7e3905f757830f4d2af97437ae41392d81594e132471afff2c7973df6",
-    "tests/test_edges.py": "599ddb825d5e7e820c46894c5eb175122aaf33c73819375daa8638d297855702",
+    "tests/test_edges.py": "cea090373dedd5ea363f97e7ee848a62a2d76e94bfd1b458c5997eddb85c9a83",
     "tests/test_provenance.py": "2918f6546a8365b21340b9c87f714f62bb50ff98f931c877799c035f86f0c5ff",
     "tests/test_workflow_e2e.py": "8ce65ea86a84cf220eef30e398318acb732666d263a69c8012a15acbd76bd985"
   }

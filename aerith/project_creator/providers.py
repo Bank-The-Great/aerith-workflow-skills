@@ -317,6 +317,13 @@ class CLIProvider:
                 raise ValueError()
         except (ValueError, KeyError, TypeError) as exc:
             raise GateError("provider did not return the required JSON object") from exc
+        # The only admitted attestation mode is provider-response-header, so only header
+        # evidence may be attested. Recorded evidence does not name the answering model;
+        # admitting it needs its own mode and an operator ruling.
+        if metadata.get("model_evidence") != "provider_response_header":
+            self.audit("provider_failure", {"vendor": self.name, "reason": "model_evidence_not_admitted",
+                       "model_evidence": metadata.get("model_evidence")})
+            raise GateError("provider result rests on recorded model evidence, which the header attestation mode does not admit")
         response = validate_output(stage, response)
         safe_text(json.dumps(response, ensure_ascii=False))
         self.audit("provider_end", {"vendor": self.name, "model_requested": model,

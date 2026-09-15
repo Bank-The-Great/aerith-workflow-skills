@@ -171,3 +171,9 @@
   Its `recorded_response_model` source says "without reroute signal", because a
   response object that records the requested model does not prove which model
   answered. Host admission pins were not changed.
+- 2026-09-15: Review found the narrowed claim growing back one step later: the data-only
+  provider runs only under attestation mode `provider-response-header`, yet it accepted
+  and audited a `recorded_response_model` result as `model_attested`. It now refuses any
+  tier other than `provider_response_header` under that mode, records the refusal as a
+  `provider_failure` event naming the tier, and never writes an attested model for it.
+  Admitting recorded evidence needs its own named mode and an operator ruling.

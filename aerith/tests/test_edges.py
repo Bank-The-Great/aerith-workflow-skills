@@ -196,6 +196,42 @@ class ProviderEdges(unittest.TestCase):
         self.assertEqual(execute.call_args.kwargs["expected_executable_sha256"], "a" * 64)
         self.assertEqual(execute.call_args.kwargs["expected_runtime_sha256"], {})
 
+    def test_data_only_codex_attests_only_header_evidence(self):
+        packet = {"instructions": "controller-only instructions"}
+        request_id = digest(packet)
+        config = {"output": "codex-data-only", "auth_mode": "codex-subscription",
+                  "filesystem_scope": "codex-home-auth-only",
+                  "loader_policy": "pe-dependent-load-system32",
+                  "attestation": {"mode": "provider-response-header"},
+                  "argv": [sys.executable, "--model", "{model}"],
+                  "proof": {"executable_sha256": "a" * 64}}
+        for tier, admitted in (("provider_response_header", True), ("recorded_response_model", False)):
+            common = {"request_id": request_id, "response_id": "response-1",
+                      "requested_model": "chosen", "evidenced_model": "chosen", "model_evidence": tier}
+            stream = "\n".join(json.dumps(x) for x in (
+                {"type": "response_metadata", **common},
+                {"type": "result", **common,
+                 "output": {"changes": [], "summary": "nothing", "questions": []}},
+            ))
+            events = []
+            with self.subTest(tier=tier), patch("project_creator.providers.validate_capability"), \
+                    patch("project_creator.providers.execute", return_value=Result(0, stream, "", 0.1)):
+                provider = CLIProvider("codex", config, audit=lambda kind, payload: events.append((kind, payload)))
+                if admitted:
+                    self.assertEqual(provider.invoke("implement", "chosen", packet, Path.cwd())["summary"], "nothing")
+                    end = [payload for kind, payload in events if kind == "provider_end"]
+                    self.assertEqual(len(end), 1)
+                    self.assertEqual(end[0]["model_attested"], "chosen")
+                    self.assertEqual(end[0]["metadata"]["model_evidence"], "provider_response_header")
+                else:
+                    with self.assertRaisesRegex(GateError, "recorded model evidence"):
+                        provider.invoke("implement", "chosen", packet, Path.cwd())
+                    # No event names a recorded-tier result as an attested model.
+                    self.assertFalse([kind for kind, _ in events if kind == "provider_end"])
+                    self.assertFalse(any("model_attested" in payload for _, payload in events))
+                    self.assertIn(("provider_failure", {"vendor": "codex", "reason": "model_evidence_not_admitted",
+                                                        "model_evidence": "recorded_response_model"}), events)
+
     def test_data_only_codex_rejects_wrong_stage_shape_locally(self):
         packet = {"instructions": "controller-only instructions"}
         request_id = digest(packet)
