@@ -1,4 +1,6 @@
 """Parser/adapter unit fixtures, not substitutes for live containment probes."""
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -9,7 +11,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import gate_inventory
 from project_creator.contracts import GateError, digest
 from project_creator.providers import (parse_claude_stream, provider_environment, VerificationRunner,
                                        CLIProvider, validate_capability, _verified_docker_class)
@@ -29,6 +33,9 @@ def stream(*, model="chosen", tools=None, usage=None, result='{"ok":true}'):
         {"type": "assistant", "session_id": "fresh", "message": {"model": model, "content": [{"type": "text", "text": result}]}},
         {"type": "result", "session_id": "fresh", "is_error": False, "modelUsage": usage or {"chosen": {}}, "result": result},
     ]
+
+
+UNSET = object()  # "this row did not name an argv", which None and "" cannot say
 
 
 class ProviderEdges(unittest.TestCase):
@@ -135,7 +142,9 @@ class ProviderEdges(unittest.TestCase):
                   "argv": [sys.executable, "--model", "{model}"]}
         original_path = os.environ.get("PATH")
         snapshots = []
-        def validate(cfg, purpose, *, environment):
+        def validate(cfg, purpose, *, name, environment):
+            # The gate is asked about the key `invoke` is launching under (R24-SPEC-01).
+            self.assertEqual(name, "codex")
             snapshots.append(environment)
             os.environ["PATH"] = "synthetic-change-after-validation"
         packet = {}
@@ -253,7 +262,7 @@ class ProviderEdges(unittest.TestCase):
             with self.subTest(attestation=attestation), patch("project_creator.providers.validate_capability"), \
                     patch("project_creator.providers.execute", side_effect=lambda *a, **k: launched.append(a)):
                 provider = CLIProvider("codex", config | {"attestation": attestation}, audit=lambda *a: None)
-                with self.assertRaisesRegex(GateError, "one reviewed native executable"):
+                with self.assertRaisesRegex(GateError, "not in a launchable data-only shape"):
                     provider.invoke("implement", "chosen", packet, Path.cwd())
                 self.assertEqual(launched, [])
 
@@ -515,7 +524,7 @@ class ProviderEdges(unittest.TestCase):
                                              "evidence_sha256": evidence_hash} for case in cases}}
             with patch.dict("project_creator.providers._HOST_CAPABILITIES", {digest(cfg): "provider"}):
                 with self.assertRaisesRegex(GateError, "does not substantiate"):
-                    validate_capability(cfg, "provider", environment=provider_environment(cfg))
+                    validate_capability(cfg, "provider", name="codex", environment=provider_environment(cfg))
 
 
     PROOF_CASES = ("fresh_context", "tools_disabled", "ambient_not_observed_in_output", "child_cleanup",
@@ -562,11 +571,11 @@ class ProviderEdges(unittest.TestCase):
         cfg["proof"] |= proof_changes or {}
         return cfg
 
-    def panel(self, cfg, *, pin=True):
+    def panel(self, cfg, *, pin=True, name="codex"):
         from project_creator.providers import attestation_facts
         pins = {digest(cfg): "provider"} if pin else {}
         with patch.dict("project_creator.providers._HOST_CAPABILITIES", pins, clear=not pin):
-            return attestation_facts(cfg)
+            return attestation_facts(cfg, name=name)
 
     def test_panel_reports_what_the_gate_validated_and_nothing_else(self):
         facts = self.panel(self.pinned_provider())
@@ -594,10 +603,58 @@ class ProviderEdges(unittest.TestCase):
         from project_creator.cli import provider_panel
         cfg = self.pinned_provider()
         with patch.dict("project_creator.providers._HOST_CAPABILITIES", {digest(cfg): "provider"}):
-            verdict, facts = provider_panel(cfg)
+            verdict, facts = provider_panel(cfg, "codex")
         self.assertEqual(verdict, "proof-current")
         self.assertIs(facts["verified"], True)
         self.assertEqual(facts["evidenced_positive_calls"], 4)
+
+    def test_readiness_surfaces_answer_for_the_vendor_key_not_only_the_record(self):
+        # R24-SPEC-01 / R24-SEC-01: the host pin is keyed on the record's digest and the record
+        # does not contain its own key, so the one legitimately pinned adapter copied under a
+        # second key is pinned too. `invoke` refuses every launch under that key; both readiness
+        # surfaces must say so. The `codex` copy of the same bytes is the control.
+        from project_creator.cli import announce_providers, main
+        cfg = self.pinned_provider()
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.dict("project_creator.providers._HOST_CAPABILITIES", {digest(cfg): "provider"}):
+            config = Path(tmp) / "config.json"
+            config.write_text(json.dumps({"providers": {"codex": cfg, "second": cfg}}))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                main(["doctor", "--config", str(config)])
+            report = json.loads(out.getvalue())
+            announced = io.StringIO()
+            with contextlib.redirect_stdout(announced):
+                announce_providers({"providers": {"codex": cfg, "second": cfg}})
+            panel = json.loads(announced.getvalue())["provider_attestation"]
+        with self.subTest("doctor"):
+            self.assertEqual(report["checks"]["providers"]["codex"], "proof-current")
+            self.assertIn("vendor key", report["checks"]["providers"]["second"])
+            self.assertIs(report["provider_attestation"]["second"]["verified"], False)
+            self.assertNotEqual(report["status"], "configured-gates-pass")
+        with self.subTest("announcement"):
+            self.assertIs(panel["codex"]["verified"], True)
+            self.assertIs(panel["second"]["verified"], False)
+            self.assertNotIn("evidenced_positive_calls", panel["second"])
+        with self.subTest("invoke refuses the same key"):
+            with patch("project_creator.providers.execute") as execute, \
+                    patch.dict("project_creator.providers._HOST_CAPABILITIES", {digest(cfg): "provider"}):
+                with self.assertRaisesRegex(GateError, "vendor key"):
+                    CLIProvider("second", cfg, audit=lambda *a: None).invoke(
+                        "implement", "chosen", {}, Path.cwd())
+                execute.assert_not_called()
+
+    def test_gate_hands_back_nothing_when_a_later_binding_refuses(self):
+        # R24-SEC-02: the measurement used to be written mid-loop, so a record with valid
+        # attestation evidence and a changed executable left numbers in `observed` after the
+        # gate had refused. The caller's early return was the only thing keeping them off screen.
+        cfg = self.pinned_provider(proof_changes={"executable_sha256": "0" * 64},
+                                   evidence_changes={"executable_sha256": "0" * 64})
+        observed = {}
+        with patch.dict("project_creator.providers._HOST_CAPABILITIES", {digest(cfg): "provider"}):
+            with self.assertRaisesRegex(GateError, "executable changed after proof"):
+                validate_capability(cfg, "provider", name="codex", observed=observed)
+        self.assertEqual(observed, {})
 
     def test_panel_shows_the_gate_refusal_and_no_numbers_at_all(self):
         # The whole point of the collapse: when the gate refuses there is nothing measured to
@@ -674,23 +731,18 @@ class ProviderEdges(unittest.TestCase):
     def test_capability_admission_refuses_on_every_condition_it_states(self):
         """REQ-LC-023: one row per refusing condition of `validate_capability`, changed alone.
 
-        The list is closed on purpose (D7, D9, D10). A condition of this function with no row
-        here is the coverage gap this test exists to make visible, and a review finding outside
-        the list is a residual rather than a block. Two groups are deliberately absent because
-        they are unreachable for a data-only provider: the per-dependency absolute-path and hash
-        checks, which a provider can never reach because it is refused outright for carrying any
-        runtime file at all (the row below), and the script-in-dependencies check, unreachable
-        since the launchable shape pins argv[1:] to exactly ["--model", "{model}"]. Both are owed
-        to the verification purpose. The Docker-kind branch is absent for a DIFFERENT reason and
-        must not be read as unreachable: it is guarded by the record's own `kind`, not by purpose,
-        so a provider record carrying `kind: "docker"` reaches it and always refuses. Its
-        provider-purpose row is owed, not waived (R23-SPEC-02).
+        The list is closed on purpose (D7, D9, D10): a review finding outside it is a residual,
+        a finding inside it blocks. This docstring deliberately makes no completeness claim.
+        Which conditions have a row, which rows are isolated by their mutant, and which
+        conditions are owed, equivalent or a recorded debt is computed from this list, the
+        gate's own source and the round's mutation log by the plan repository's coverage
+        ledger, which refuses to emit a paragraph when any of those disagree. Round 24 showed a
+        hand-written account here drifting from the code within one round (R24-SPEC-02).
 
-        One row below is deliberately not isolating: a check time without a zone is refused by
-        the subtraction itself (TypeError, same handler, same message), so the explicit
-        `tzinfo is None` disjunct cannot be distinguished by any input and its mutant is
-        equivalent. The row is kept because the refusal is what matters to an operator; the
-        redundancy is recorded here rather than hidden behind a test that appears to cover it.
+        Every row is computed inside `check`, which turns an exception other than GateError
+        into the text "raised <type>". The rows are built before the subTest loop, so without
+        that an exception from one row ended the whole method with no row label, and a mutant
+        killed that way could not be told apart from one killed by the row it names.
         """
         cases = ("fresh_context", "tools_disabled", "ambient_not_observed_in_output", "child_cleanup",
                  "model_attestation", "subscription_auth_only",
@@ -703,10 +755,23 @@ class ProviderEdges(unittest.TestCase):
 
         def check(attestation, measurement, limits=None, evidence_changes=None, proof_changes=None,
                   config_changes=None, case_changes=None, evidence_files=None, environment=None,
-                  argv=None, host_pin=True):
+                  argv=UNSET, host_pin=True, name="codex"):
+            try:
+                return admission(attestation, measurement, limits, evidence_changes, proof_changes,
+                                 config_changes, case_changes, evidence_files, environment, argv,
+                                 host_pin, name)
+            except Exception as exc:  # noqa: BLE001 - reported per row, never swallowed silently
+                return "raised " + type(exc).__name__
+
+        def admission(attestation, measurement, limits, evidence_changes, proof_changes,
+                      config_changes, case_changes, evidence_files, environment, argv, host_pin, name):
             with tempfile.TemporaryDirectory() as tmp:
                 evidence = Path(tmp) / "evidence.json"
-                cfg = {"argv": argv or [sys.executable, "--model", "{model}"],
+                if callable(argv):
+                    argv = argv(Path(tmp))
+                # A sentinel, not `argv or [...]`: a row that gives argv as None or as a string is
+                # testing exactly the shape checks that a falsy default would hide.
+                cfg = {"argv": [sys.executable, "--model", "{model}"] if argv is UNSET else argv,
                        "output": "codex-data-only",
                        "filesystem_scope": "codex-home-auth-only",
                        "loader_policy": "pe-dependent-load-system32",
@@ -744,7 +809,7 @@ class ProviderEdges(unittest.TestCase):
                 pins = {digest(cfg): "provider"} if host_pin else {}
                 with patch.dict("project_creator.providers._HOST_CAPABILITIES", pins, clear=not host_pin):
                     try:
-                        validate_capability(cfg, "provider",
+                        validate_capability(cfg, "provider", name=name,
                                             environment=environment or provider_environment(cfg))
                         return "admitted"
                     except GateError as exc:
@@ -791,6 +856,9 @@ class ProviderEdges(unittest.TestCase):
                                                           recorded_run, honest),
              "provider capability is not in a launchable data-only shape"),
             ("attestation naming an unknown mode", check({"mode": "trust-me"}, recorded_run, honest),
+             "provider capability is not in a launchable data-only shape"),
+            ("attestation whose mode is not a string", check({"mode": ["recorded-response-model"]},
+                                                             recorded_run, honest),
              "provider capability is not in a launchable data-only shape"),
             # The one measured invariant that survived (REQ-LC-020).
             ("recorded tier withdrawn", check(recorded, recorded_run | {"recorded_tier_withdrawn": True}, honest),
@@ -882,6 +950,14 @@ class ProviderEdges(unittest.TestCase):
             ("evidence case measurement not a mapping",
              check(recorded, recorded_run, honest, evidence_changes=other_case(recorded_run, measurement=[1])),
              substantiate),
+            # Only `fresh_context` is malformed here. An earlier version replaced every case with a
+            # fixture measurement, so the attestation case refused first and the row produced the
+            # right message for the wrong reason: the coverage ledger measured that its mutant
+            # changed no row's value, which is how the mistake surfaced.
+            ("evidence case that is not a mapping",
+             check(recorded, recorded_run, honest,
+                   evidence_changes={"cases": other_case(recorded_run)["cases"] | {"fresh_context": "not a mapping"}}),
+             substantiate),
             # The executable and what may sit beside it.
             # The evidence names the same executable as the proof, so the binding holds and the
             # file on disk is what fails: without moving both, an earlier binding answers first.
@@ -904,19 +980,37 @@ class ProviderEdges(unittest.TestCase):
              check(recorded, recorded_run, honest, argv=[sys.executable, "helper.py"]),
              "provider capability is not in a launchable data-only shape"),
             # The launchable-shape class itself (R23-SPEC-04), one disjunct per row.
+            # R24-SPEC-01 / R24-SEC-01: the vendor key is the member the first version could not
+            # see, because it is not a field of the record. A missing key refuses, never excuses.
+            ("filed under another vendor key", check(recorded, recorded_run, honest, name="second"),
+             "only the codex vendor key may launch a reviewed data-only worker"),
+            ("no vendor key named", check(recorded, recorded_run, honest, name=None),
+             "only the codex vendor key may launch a reviewed data-only worker"),
             ("no subscription auth mode", check(recorded, recorded_run, honest,
                                                 config_changes={"auth_mode": "api-key"}),
              "provider capability is not in a launchable data-only shape"),
             ("argv of the wrong length", check(recorded, recorded_run, honest,
                                                argv=[sys.executable, "--model"]),
              "provider capability is not in a launchable data-only shape"),
+            ("argv that is not a list", check(recorded, recorded_run, honest, argv=None),
+             "provider capability is not in a launchable data-only shape"),
+            ("argv whose first element is not a string",
+             check(recorded, recorded_run, honest, argv=[7, "--model", "{model}"]),
+             "provider capability is not in a launchable data-only shape"),
             ("argv template changed", check(recorded, recorded_run, honest,
                                             argv=[sys.executable, "--model", "gpt-6-astra"]),
              "provider capability is not in a launchable data-only shape"),
+            # R24-SEC-08: the first version named a file that does not exist, so its mutant died
+            # of FileNotFoundError rather than by being admitted. This row names a real file with
+            # the executable's exact bytes under a `.bat` name, so every other binding holds and
+            # only the suffix disjunct can refuse it.
             ("executable is not an exe", check(recorded, recorded_run, honest,
-                                               argv=[sys.executable + ".bat", "--model", "{model}"]),
+                                               argv=lambda tmp: [str(Path(shutil.copyfile(
+                                                   sys.executable, tmp / "worker.bat"))),
+                                                   "--model", "{model}"]),
              "provider capability is not in a launchable data-only shape"),
         )
+        gate_inventory.record_row_values("edges", {label: actual for label, actual, _ in expectations})
         for label, actual, expected in expectations:
             with self.subTest(label):
                 self.assertEqual(actual, expected)

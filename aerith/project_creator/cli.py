@@ -64,15 +64,19 @@ def parser():
     return p
 
 
-def provider_panel(adapter):
+def provider_panel(adapter, name):
     """The gate's verdict and what it measured, from ONE call to the gate.
 
     Since round 24 `attestation_facts` runs the gate itself and carries the refusal reason, so
     this is a naming layer over it rather than a second decision. `doctor` wants the verdict as
     a sentence; every other surface wants the facts, which now include it.
+
+    `name` is the key the adapter is configured under and is required: the verdict is for a
+    vendor, not for a record, because `invoke` refuses a correctly shaped record filed under any
+    key but `codex` (R24-SPEC-01, R24-SEC-01).
     """
-    facts = attestation_facts(adapter)
-    return ("proof-current" if facts["verified"] else facts["reason"] or "adapter unavailable"), facts
+    facts = attestation_facts(adapter, name=name)
+    return ("proof-current" if facts["verified"] else facts["reason"]), facts
 
 
 def announce_providers(run_config, **extra):
@@ -88,7 +92,7 @@ def announce_providers(run_config, **extra):
     """
     providers = run_config.get("providers") if isinstance(run_config, dict) else None
     panel = dict(extra, provider_attestation={
-        name: provider_panel(adapter)[1]
+        name: provider_panel(adapter, name)[1]
         for name, adapter in (providers if isinstance(providers, dict) else {}).items()})
     body = json.dumps(panel, ensure_ascii=False, indent=2)
     safe_text(body)
@@ -127,10 +131,16 @@ def main(argv=None):
             if args.config:
                 cfg = load_config(args.config)
                 checks["providers_configured"] = bool(cfg.get("providers"))
+                # Provider verdicts live in their own mapping. They used to share the top level
+                # with `verification`, `package_admission` and `ledger`, so a provider filed under
+                # one of those keys had its refusal overwritten by the check of the same name, and
+                # `doctor` could pass a configuration no provider of which can launch (round 25,
+                # INVERTER F9).
+                checks["providers"] = {}
                 for vendor, adapter in cfg.get("providers", {}).items():
                     # REQ-LC-022: the facts are reported even when the gate refuses, because the
                     # reason for a refusal is usually in these numbers, and they carry the verdict.
-                    checks[vendor], attestation[vendor] = provider_panel(adapter)
+                    checks["providers"][vendor], attestation[vendor] = provider_panel(adapter, vendor)
                 try:
                     validate_capability(cfg.get("verification_sandbox", {}), "verification")
                     checks["verification"] = "proof-current"
@@ -144,7 +154,9 @@ def main(argv=None):
             if args.state and (args.state / "ledger.sqlite3").is_file():
                 store = Store(args.state, read_only=True)
                 checks["ledger"] = store.verify()
-            passed = bool(args.config) and all(x is True or x == "proof-current" for x in checks.values())
+            passed = (bool(args.config)
+                      and all(x is True or x == "proof-current" for key, x in checks.items() if key != "providers")
+                      and all(x == "proof-current" for x in checks.get("providers", {}).values()))
             print(json.dumps({"read_only": True, "status": "configured-gates-pass" if passed else "not-ready",
                               "checks": checks, "provider_attestation": attestation, "model_calls": 0}, ensure_ascii=False))
             return 0 if passed else 2

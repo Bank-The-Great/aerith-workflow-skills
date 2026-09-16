@@ -13,7 +13,9 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import gate_inventory
 from project_creator.contracts import (GateError, criteria, digest, safe_relative, ticket_order, validate_review)
 from project_creator.engine import Engine, RESOURCE_FILES, configure_runtime_resources, start
 from project_creator.models import accept_pin, catalog_pin, declare_pin, model_for, refresh_catalog
@@ -223,9 +225,25 @@ class Harness(unittest.TestCase):
             with contextlib.redirect_stdout(out):
                 self.assertEqual(main(["doctor", "--config", str(config)]), 2)
             report = json.loads(out.getvalue())
-            self.assertIn("codex", report["checks"])
-            self.assertNotEqual(report["checks"]["codex"], "proof-current")
+            self.assertIn("codex", report["checks"]["providers"])
+            self.assertNotEqual(report["checks"]["providers"]["codex"], "proof-current")
             self.assertIs(report["provider_attestation"]["codex"]["verified"], False)
+
+    def test_doctor_keeps_a_provider_verdict_apart_from_a_check_of_the_same_name(self):
+        # Round 25 (INVERTER F9): provider verdicts shared the top level of `checks` with the
+        # doctor's own checks, so a provider filed under `verification` was overwritten by the
+        # sandbox verdict and its refusal disappeared from the pass computation.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "config.json"
+            config.write_text(json.dumps({"providers": {"verification": {"output": "codex-data-only"}},
+                                          "verification_sandbox": {}}))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(main(["doctor", "--config", str(config)]), 2)
+            report = json.loads(out.getvalue())
+            self.assertIn("trusted host", report["checks"]["providers"]["verification"])
+            self.assertIn("trusted host", report["checks"]["verification"])
+            self.assertEqual(set(report["checks"]["providers"]), {"verification"})
 
     def test_doctor_survives_a_malformed_provider_entry(self):
         # R22-SPEC-06 / R22-SEC-05b: both of these used to leave doctor with a traceback, because
@@ -238,7 +256,7 @@ class Harness(unittest.TestCase):
                 with contextlib.redirect_stdout(out):
                     self.assertEqual(main(["doctor", "--config", str(config)]), 2)
                 report = json.loads(out.getvalue())
-                self.assertNotEqual(report["checks"]["codex"], "proof-current")
+                self.assertNotEqual(report["checks"]["providers"]["codex"], "proof-current")
                 self.assertIs(report["provider_attestation"]["codex"]["available"], False)
                 self.assertIs(report["provider_attestation"]["codex"]["verified"], False)
                 self.assertTrue(report["provider_attestation"]["codex"]["reason"])
@@ -253,7 +271,7 @@ class Harness(unittest.TestCase):
                "loader_policy": "pe-dependent-load-system32", "auth_mode": "codex-subscription",
                "attestation": {"mode": "recorded-response-model"}, "proof": []}
         with patch.dict("project_creator.providers._HOST_CAPABILITIES", {digest(cfg): "provider"}):
-            verdict, facts = provider_panel(cfg)
+            verdict, facts = provider_panel(cfg, "codex")
         self.assertIn("unreadable", verdict)
         self.assertIs(facts["available"], False)
         self.assertIs(facts["verified"], False)
@@ -721,11 +739,21 @@ class Contracts(unittest.TestCase):
                  "reviewed runtime path is not immutable"),
                 ("file changed before launch", (shaped, {}, argv), "reviewed file changed before launch"),
             )
-            for label, args, message in cases:
-                with self.subTest(label), self.assertRaisesRegex(GateError, message):
-                    locks = _reviewed_locks(*args)
-                    for lock in locks:
+            def refusal(args):
+                try:
+                    for lock in _reviewed_locks(*args):
                         lock.close()
+                    return "admitted"
+                except GateError as exc:
+                    return str(exc)
+                except Exception as exc:  # noqa: BLE001 - reported per row, never swallowed
+                    return "raised " + type(exc).__name__
+
+            actuals = {label: refusal(args) for label, args, _ in cases}
+            gate_inventory.record_row_values("lock", actuals)
+            for label, args, message in cases:
+                with self.subTest(label):
+                    self.assertRegex(actuals[label], message)
 
     def test_reviewed_executable_and_runtime_are_locked_for_real_launch(self):
         with tempfile.TemporaryDirectory() as tmp:

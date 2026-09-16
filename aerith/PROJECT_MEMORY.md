@@ -44,6 +44,22 @@
   or echoed evidence in a field whose name claims the answering model.
 - Pin the runtime's entire executable closure, not just a launcher or bundle.
   Source-built CLI provenance does not by itself prove tool-less containment.
+- A precondition that is not a field of the record is invisible to anything that
+  reads only the record. Pass the key a decision is filed under into the decision,
+  and let a caller with no key to give be refused rather than excused.
+- A claim about how completely something is covered is generated from the code,
+  the tests and the mutation results, or it is not made. Three rounds of review
+  failed on a hand-written coverage sentence and none failed on the behaviour.
+- An extractor that reads a gate must refuse the shapes it was not taught. One
+  that skips them reports a subset as the whole, with a machine's authority.
+- A mutant killed by a crash in a row proves nothing about the condition it is
+  named for. Compare what the row PRODUCED, not which row failed.
+- A verdict namespace is not a place to put caller-named keys: a provider filed
+  under `verification` overwrote the check of that name and passed the gate.
+- A coverage instrument must not run inside the mutation campaign it reports
+  on. A check that the inventory matches the registry fails whenever a condition
+  is deleted, so every such mutant dies of bookkeeping and the campaign measures
+  the instrument instead of the tests.
 
 ## Lesson Log
 
@@ -254,3 +270,48 @@
   HARNESS_FAILURE were deleting a block header and leaving an empty body: a mutant must change
   BEHAVIOUR, never syntax, or it measures the module loader instead of the tests.
 
+
+- 2026-09-16 (round 25): the round 24 fix closed four of the five preconditions a launch has, and
+  both reviewers found the fifth independently. The missing one was the vendor KEY the adapter is
+  filed under, which is not a field of the record, so a function that took only the record could not
+  see it; the host pin is keyed on the record's digest, so one legitimately pinned adapter copied
+  under a second key was pinned too, reported `proof-current` by both readiness surfaces, and
+  refused at every launch. Forward rule: pass the key a decision is filed under INTO the decision,
+  make it required, and refuse a caller that has none rather than excusing it.
+
+- 2026-09-16 (round 25): rounds 22, 23 and 24 all failed review on the ACCOUNT of completeness and
+  none on behaviour. The answer was to stop writing the account. The conditions are now extracted
+  from the gate's source by `tests/gate_inventory.py`, each one carries a disposition in
+  `tests/gate_conditions.json`, and the paragraph in the plan is emitted by a ledger that refuses
+  when the code, the registry, the rows and the mutation results disagree. Two properties matter
+  more than the automation: the extractor REFUSES any code shape it has not been taught, because one
+  that skipped a shape would report a subset as the whole with a machine's authority; and isolation
+  is measured from what each row PRODUCED, so a mutant killed by crashing its row is reported as
+  killed by a crash rather than counted as proof of the condition it is named for.
+
+- 2026-09-16 (round 25): the `at` spelling deleted in round 24 was recorded here as a dead
+  condition beside two that genuinely were subsumed or dead. It was neither. An evidence file whose
+  top-level check time is spelled `at`, with `proof.checked_at` equal to it, was ADMITTED before the
+  deletion and is REFUSED after it, so the deletion was a deliberate narrowing of admission. The
+  falsifier was run against all three retained live-run evidence files and every one spells it
+  `checked_at`, so nothing held is refused and no live run is owed. Forward rule: a deletion that
+  changes what is admitted is a narrowing, and calling it the removal of an unfalsifiable condition
+  hides the decision from the next reader.
+
+- 2026-09-16 (round 25): two defects were found while answering the reviews rather than by them.
+  `doctor` kept provider verdicts in the same mapping as its own checks, so a provider filed under
+  `verification` had its refusal overwritten by the sandbox check of that name and could not affect
+  the verdict. And the two-repo test asserting that a live-probe adapter is admitted by the package
+  gate had been RED since D10 in round 22, asserting three refusals D10 deliberately removed, in a
+  lane that nothing runs. Forward rule: a test in a manifest nobody runs is not coverage, and a
+  shared namespace between verdicts and checks is a place for one to overwrite the other.
+
+- 2026-09-16 (round 25): the coverage instrument's first campaign caught the instrument. Three
+  mutants that delete a condition died only in the test that checks the extracted inventory against
+  the registry, because deleting a condition is exactly what makes those two disagree; no behaviour
+  test noticed them. Reported as written, "89 of 89 killed" would have counted the instrument's own
+  paperwork as coverage of the gate. The instrument's tests moved into `tests/test_inventory.py`,
+  which the suite runs and the campaign does not, and the two conditions left without a killer were
+  given real rows. Forward rule: a control that reports on a suite must not run inside the
+  measurement it reports on, and a survivor list predicted before a run is a claim to check against
+  the run, not a result to write down afterwards.

@@ -43,27 +43,36 @@ def _attestation_mode(config: dict):
     return None
 
 
-def _launchable_provider_shape(config) -> bool:
-    """Everything `invoke` requires of the record BEFORE it launches anything.
+def _launch_refusal(config, name):
+    """Why `invoke` would refuse to launch this record under this key, or None.
 
-    R23-SPEC-04. Round 23 restored one member of this class (the record must name a floor) and
-    stopped, so the readiness surfaces still reported `proof-current` for records whose every
-    call was certain to be refused. None of these asserts anything about the world; each says
-    only that the record is in the shape a launch can use. One owner, called by the gate and by
-    `invoke`, so the two cannot drift apart.
+    R23-SPEC-04, completed at R24-SPEC-01 / R24-SEC-01. The first version took only the record,
+    so it could not see the one precondition that is not a field of the record: the vendor KEY
+    the record is filed under. A correctly shaped adapter copied under a second key hashed
+    identically, was pinned identically, and was reported `proof-current` by both readiness
+    surfaces while every launch of it was refused. The key is therefore an argument, it is
+    required, and a caller that has no key to give (None) is refused rather than excused.
+
+    The key has its own message, because an operator told that a correctly shaped record is
+    "not in a launchable shape" is told something untrue about the record. Both messages are
+    fixed text: neither names the key or any other caller-supplied value.
+
+    None of these asserts anything about the world; each says only that the record and its key
+    are in the shape a launch can use. One owner, called by the gate and by `invoke`, so the two
+    cannot drift apart. `output`, `filesystem_scope` and `loader_policy` are not repeated here:
+    the data-only worker check owns them in both places, with its own message and its own rows.
     """
-    if not isinstance(config, dict):
-        return False
-    # `output`, `filesystem_scope` and `loader_policy` are NOT repeated here: the data-only
-    # worker check above owns them, with its own message and its own rows. Two owners for one
-    # input is the defect this function exists to remove, not to reproduce.
+    if name != "codex":
+        return "only the codex vendor key may launch a reviewed data-only worker"
     template = config.get("argv")
-    return (config.get("auth_mode") == "codex-subscription"
+    if not (config.get("auth_mode") == "codex-subscription"
             # No length check: a list whose tail is exactly these two elements has exactly
             # three, so a separate `len(template) == 3` was redundant and unfalsifiable.
             and isinstance(template, list) and template[1:] == ["--model", "{model}"]
             and isinstance(template[0], str) and Path(template[0]).suffix.lower() == ".exe"
-            and _attestation_mode(config) is not None)
+            and _attestation_mode(config) is not None):
+        return "provider capability is not in a launchable data-only shape"
+    return None
 
 
 def _model_attestation_measured(measurement: dict) -> bool:
@@ -159,13 +168,20 @@ def parse_claude_stream(text, requested):
                                          "metered_models": sorted(final.get("modelUsage", {}))}
 
 
-def validate_capability(config: dict, purpose: str, *, environment=None, observed=None):
+def validate_capability(config: dict, purpose: str, *, name=None, environment=None, observed=None):
     """Admit a reviewed capability, and optionally hand back what it measured.
 
+    `name` is the vendor key the record is filed under. For the provider purpose it is part of
+    the launchable shape, and leaving it out refuses (R24-SPEC-01): a readiness answer that
+    does not know which key it is answering for cannot be the answer `invoke` will give.
+
     `observed`, when given a dict, receives the model-attestation measurement and its check
-    time AFTER every binding above has passed. It exists so the operator's summary has one
-    reader of the evidence rather than two: the second reader was weaker than this one on
-    six counts and disagreed with it on a seventh (R23-SEC-02, R23-SPEC-03, R23-SPEC-05).
+    time only when this function is about to return, after every refusal it can make. It exists
+    so the operator's summary has one reader of the evidence rather than two: the second reader
+    was weaker than this one on six counts and disagreed with it on a seventh (R23-SEC-02,
+    R23-SPEC-03, R23-SPEC-05). It was first written mid-loop, before the executable, runtime-file,
+    Docker and dependency refusals, so the invariant was held by the caller's early return rather
+    than by this function (R24-SEC-02); the measurement is now staged and handed back last.
     """
     if _HOST_CAPABILITIES.get(digest(config)) != purpose:
         raise GateError("capability is not pinned by the trusted host admission registry")
@@ -178,12 +194,15 @@ def validate_capability(config: dict, purpose: str, *, environment=None, observe
     # the evidence. It answers one question, whether this is the reviewed executable with
     # intact evidence that has not expired; what the proof measured about the model is
     # reported to the operator by `attestation_facts` rather than certified here.
-    # The record must still be in a LAUNCHABLE shape (R22-SEC-02, widened to the whole class at
-    # R23-SPEC-04): none of those clauses asserts anything about the world, they only say the
-    # record is usable, and without them the readiness surfaces report a record ready when every
-    # launch of it is certain to be refused.
-    if purpose == "provider" and not _launchable_provider_shape(config):
-        raise GateError("provider capability is not in a launchable data-only shape")
+    # The record must still be in a LAUNCHABLE shape, under the key it is filed with (R22-SEC-02,
+    # R23-SPEC-04, R24-SPEC-01): none of those clauses asserts anything about the world, they only
+    # say the record is usable, and without them a readiness surface reports a record ready when
+    # every launch of it is refused. What that owner checks is inventoried by the coverage ledger,
+    # not restated here.
+    if purpose == "provider":
+        refusal = _launch_refusal(config, name)
+        if refusal:
+            raise GateError(refusal)
     if purpose == "provider" and proof.get("environment_hash") != digest(provider_environment(config) if environment is None else environment):
         raise GateError("provider auth-home/runtime environment changed after host review")
     expected = digest({k: v for k, v in config.items() if k != "proof"})
@@ -203,6 +222,7 @@ def validate_capability(config: dict, purpose: str, *, environment=None, observe
                  "dependent_load_flags_system32", "delay_imports_absent",
                  "imports_allowlisted"})
     cases = proof.get("cases", {})
+    staged = {}
     if not all(isinstance(cases.get(key), dict) and cases[key].get("passed") is True
                and cases[key].get("expected") == cases[key].get("observed")
                and cases[key].get("evidence_sha256") for key in required):
@@ -237,11 +257,11 @@ def validate_capability(config: dict, purpose: str, *, environment=None, observe
                      and measured.get("runtime_files") == proof.get("runtime_files", {}))
             if valid and purpose == "provider" and case == "model_attestation":
                 valid = _model_attestation_measured(measured_case["measurement"])
-                if valid and observed is not None:
+                if valid:
                     # The gate is the ONLY reader of this file. What the operator is shown comes
-                    # from here, already validated, instead of from a second weaker read.
-                    observed["measurement"] = measured_case["measurement"]
-                    observed["checked_at"] = measured_at
+                    # from here, already validated, instead of from a second weaker read. It is
+                    # staged, and reaches `observed` only after the last refusal below.
+                    staged = {"measurement": measured_case["measurement"], "checked_at": measured_at}
         except ValueError:
             valid = False
         if not valid:
@@ -266,17 +286,19 @@ def validate_capability(config: dict, purpose: str, *, environment=None, observe
         if Path(arg).suffix.lower() in {".py", ".js", ".mjs", ".cjs", ".exe"} and arg not in dependencies:
             raise GateError(f"{purpose} script or binary missing from proof")
     runtime_bytes = {}
-    for name, expected_hash in dependencies.items():
-        if not Path(name).is_absolute():
+    for dependency, expected_hash in dependencies.items():
+        if not Path(dependency).is_absolute():
             raise GateError(f"{purpose} runtime dependency changed after proof")
-        raw = Path(name).read_bytes()
+        raw = Path(dependency).read_bytes()
         if digest(raw) != expected_hash:
             raise GateError(f"{purpose} runtime dependency changed after proof")
-        runtime_bytes[name] = raw
+        runtime_bytes[dependency] = raw
+    if observed is not None:
+        observed.update(staged)
     return runtime_bytes
 
 
-def attestation_facts(config: dict, *, at=None, environment=None) -> dict:
+def attestation_facts(config: dict, *, name=None) -> dict:
     """What the GATE measured about the model, for the operator to read before the first call.
 
     REQ-LC-022, rebuilt after round 23 (R23-SEC-01/02/03, R23-SPEC-03/05/06). The first two
@@ -294,10 +316,16 @@ def attestation_facts(config: dict, *, at=None, environment=None) -> dict:
     unreachable and gone. The panel opens no file of its own, so it needs no path, size or
     reparse bounds, and it is no longer an oracle over caller-named paths.
 
+    `name` is the vendor key the record is filed under, forwarded to the gate so the verdict is
+    the one `invoke` would reach for that key (R24-SPEC-01). There is no `at` and no
+    `environment` parameter any more: each let a caller print numbers from a clock or an
+    environment other than the one the gate decided with (R24-SEC-04), and neither had a caller.
+
     `answering_model_proven` stays False by construction, never by measurement, because no
-    observation on this backend can establish it (D4). Never raises, for any input.
+    observation on this backend can establish it (D4). Never raises, for any input: the
+    arithmetic over the handed-back check time sits inside the same guard as the gate, so the
+    contract holds at this function rather than two functions away (R24-SPEC-06, R24-SEC-03).
     """
-    at = at or datetime.now(timezone.utc)
     facts = {"verified": False, "available": False, "answering_model_proven": False,
              "declared_evidence_floor": _attestation_mode(config) if isinstance(config, dict) else None,
              "statement": "The model that generated the output is not proven on this backend: the "
@@ -306,23 +334,33 @@ def attestation_facts(config: dict, *, at=None, environment=None) -> dict:
              "reason": None, "warnings": []}
     measured = {}
     try:
-        validate_capability(config, "provider", environment=environment, observed=measured)
+        validate_capability(config, "provider", name=name, observed=measured)
     except GateError as exc:
         facts["reason"] = str(exc)
         return facts
     except (OSError, KeyError, TypeError, ValueError, IndexError, AttributeError) as exc:
         # A pinned-but-malformed record can reach the gate in shapes no GateError covers. The
-        # summary reports that rather than ending the command with a traceback.
+        # summary reports that rather than ending the command with a traceback. `IndexError` is
+        # not reachable through today's launchable shape (R24-SPEC-07, R24-SEC-07); it stays,
+        # because this contract is "never raises" and must not depend on that shape staying put.
         facts["reason"] = "provider record is unreadable: " + type(exc).__name__
         return facts
     measurement = measured.get("measurement", {})
-    for key in ("evidenced_positive_calls", "provider_response_header_calls",
-                "recorded_response_model_calls", "recorded_tier_withdrawn", "unserved_echo_observable"):
-        facts[key] = measurement.get(key)
-    facts["checked_at"] = measured.get("checked_at")
-    age = at - datetime.fromisoformat(facts["checked_at"])
-    facts["age_days"] = round(age.total_seconds() / 86400, 2)
-    facts["expires_in_days"] = round((_PROOF_LIFETIME - age).total_seconds() / 86400, 2)
+    numbers = {key: measurement.get(key) for key in (
+        "evidenced_positive_calls", "provider_response_header_calls",
+        "recorded_response_model_calls", "recorded_tier_withdrawn", "unserved_echo_observable")}
+    try:
+        numbers["checked_at"] = measured["checked_at"]
+        age = datetime.now(timezone.utc) - datetime.fromisoformat(numbers["checked_at"])
+        numbers["age_days"] = round(age.total_seconds() / 86400, 2)
+        numbers["expires_in_days"] = round((_PROOF_LIFETIME - age).total_seconds() / 86400, 2)
+    except (KeyError, TypeError, ValueError) as exc:
+        # Unreachable while the gate binds the check time before admitting; if that binding is
+        # ever lost, the operator is told the GATE handed back nothing usable, not that the
+        # record is at fault, and no partial numbers are shown.
+        facts["reason"] = "the gate admitted without handing back a check time: " + type(exc).__name__
+        return facts
+    facts |= numbers
     # Only reachable warnings live here. Expiry, a future date and a record/evidence time
     # disagreement are all refusals the gate has already made, so a warning for them could never
     # fire and would only teach a reader that this function still judges those things.
@@ -418,16 +456,17 @@ class CLIProvider:
         self.name, self.config, self.audit, self.cancelled = name, config, audit, cancelled
 
     def invoke(self, stage: str, model: str, packet: dict, directory: Path) -> dict:
-        if (self.name != "codex" or self.config.get("output") not in _ADMITTED_PROVIDER_OUTPUTS
+        if (self.config.get("output") not in _ADMITTED_PROVIDER_OUTPUTS
                 or self.config.get("filesystem_scope") != "codex-home-auth-only"
                 or self.config.get("loader_policy") != "pe-dependent-load-system32"):
             raise GateError("only a reviewed data-only provider worker may be launched")
-        # One owner for the launchable shape, shared with the gate (R23-SPEC-04), so a readiness
-        # surface can no longer report ready for a record every launch of which is refused here.
-        if not _launchable_provider_shape(self.config):
-            raise GateError("data-only provider requires one reviewed native executable")
+        # One owner for the launchable shape, shared with the gate (R23-SPEC-04), and since
+        # R24-SPEC-01 that owner also holds the vendor key, which this line used to check alone.
+        refusal = _launch_refusal(self.config, self.name)
+        if refusal:
+            raise GateError(refusal)
         env = provider_environment(self.config)
-        validate_capability(self.config, "provider", environment=env)
+        validate_capability(self.config, "provider", name=self.name, environment=env)
         argv = [arg.replace("{model}", model) for arg in self.config["argv"]]
         if not any(model in arg for arg in argv):
             raise GateError("provider does not explicitly select the pinned model")
