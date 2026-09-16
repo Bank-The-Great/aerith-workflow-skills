@@ -686,12 +686,15 @@
    "kind": "expression",
    "text": "_model_attestation_measured(measured_case['measurement'])",
    "message": "retained evidence does not substantiate the claimed capability",
-   "disposition": "structural",
-   "rows": [],
+   "disposition": "covered",
+   "rows": [
+    "edges:recorded tier withdrawn",
+    "edges:no evidenced positive call"
+   ],
    "mutants": [
     "attestation_case_not_bound"
    ],
-   "reason": "delegation; the invariant's own conditions are inventoried in _model_attestation_measured"
+   "reason": "delegation to the invariant, whose own conditions are inventoried in _model_attestation_measured; it carries evidence, so it is covered rather than a judgement"
   },
   {
    "id": "validate_capability | guards staged = {'measurement': measured_case['measurement'], 'checked_at': measured_at | valid",
