@@ -14,9 +14,11 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import gate_inventory
+from project_creator import providers as providers_module
 from project_creator.contracts import GateError, digest
 from project_creator.providers import (parse_claude_stream, provider_environment, VerificationRunner,
-                                       CLIProvider, validate_capability, _verified_docker_class)
+                                       CLIProvider, validate_capability, _verified_docker_class,
+                                       _launch_refusal)
 from project_creator.docker_sandbox import DockerSandbox
 from project_creator.processes import Result
 from project_creator.output_schemas import SCHEMAS, validate_output
@@ -728,6 +730,42 @@ class ProviderEdges(unittest.TestCase):
         self.assertIs(facts["verified"], False)
         self.assertIn("unreadable", facts["reason"])
 
+    def test_the_unreachable_for_a_provider_claims_rest_on_a_clause_this_test_holds(self):
+        """R27, INVERTER F4: `unreachable for a provider` is a theorem, not a property of the line.
+
+        Four conditions of `validate_capability` carry no test row, on a recorded reason of the form
+        "unreachable for a provider". That is never a fact about those four lines. It follows from a
+        clause somewhere else, and both clauses it follows from have already been widened once each
+        (R23-SPEC-04, R24-SPEC-01). Written as prose in a registry field, the claim keeps reading
+        true for as long as nobody re-derives it, which is to say forever.
+
+        This test is the re-derivation. It fails on the day either clause moves, which is the only
+        form of that claim worth holding.
+        """
+        scripted = {".py", ".js", ".mjs", ".cjs", ".exe"}
+        launchable = {"auth_mode": "codex-subscription", "attestation": {"mode": "recorded-response-model"}}
+        pinned_tail = ["--model", "{model}"]
+
+        # CLAUSE ONE: the launchable shape pins the argv tail to exactly these two elements, so the
+        # script-or-binary scan below it can never see an argument with one of those suffixes.
+        self.assertIsNone(_launch_refusal(launchable | {"argv": [sys.executable] + pinned_tail}, "codex"))
+        for tail in ([], ["--model"], ["--model", "{model}", "helper.py"], ["--script", "run.py"],
+                     ["--model", "{model}", "payload.exe"], ["{model}", "--model"]):
+            with self.subTest(tail=tail):
+                self.assertIsNotNone(_launch_refusal(launchable | {"argv": [sys.executable] + tail}, "codex"),
+                                     "the argv pin widened; the script-scan conditions may now be reachable "
+                                     "and their registry dispositions have to be re-derived")
+        for argument in pinned_tail:
+            self.assertNotIn(Path(argument).suffix.lower(), scripted)
+
+        # CLAUSE TWO: a provider carrying any runtime file at all is refused before the dependency
+        # loop, so that loop runs only over an empty mapping and its body is never entered. The
+        # refusal itself has its own row; what this holds is the ORDER the unreachability rests on.
+        source = Path(providers_module.__file__).read_text(encoding="utf-8")
+        refusal = source.index('raise GateError("data-only provider must be one reviewed native executable")')
+        loop = source.index("for dependency, expected_hash in dependencies.items():")
+        self.assertLess(refusal, loop, "the dependency loop moved above the refusal that empties it")
+
     def test_capability_admission_refuses_on_every_condition_it_states(self):
         """REQ-LC-023: one row per refusing condition of `validate_capability`, changed alone.
 
@@ -755,16 +793,17 @@ class ProviderEdges(unittest.TestCase):
 
         def check(attestation, measurement, limits=None, evidence_changes=None, proof_changes=None,
                   config_changes=None, case_changes=None, evidence_files=None, environment=None,
-                  argv=UNSET, host_pin=True, name="codex"):
+                  argv=UNSET, host_pin=True, name="codex", evidence_raw=None):
             try:
                 return admission(attestation, measurement, limits, evidence_changes, proof_changes,
                                  config_changes, case_changes, evidence_files, environment, argv,
-                                 host_pin, name)
+                                 host_pin, name, evidence_raw)
             except Exception as exc:  # noqa: BLE001 - reported per row, never swallowed silently
                 return "raised " + type(exc).__name__
 
         def admission(attestation, measurement, limits, evidence_changes, proof_changes,
-                      config_changes, case_changes, evidence_files, environment, argv, host_pin, name):
+                      config_changes, case_changes, evidence_files, environment, argv, host_pin,
+                      name, evidence_raw):
             with tempfile.TemporaryDirectory() as tmp:
                 evidence = Path(tmp) / "evidence.json"
                 if callable(argv):
@@ -788,7 +827,15 @@ class ProviderEdges(unittest.TestCase):
                               measurement if case == "model_attestation" else {"fixture": True})}
                               for case in cases}}
                 record |= evidence_changes or {}
-                evidence.write_text(json.dumps(record))
+                # `evidence_raw` writes the file's bytes directly. Every other row reaches the gate
+                # through `json.dumps` of a mapping, which is structurally unable to produce evidence
+                # that is not JSON at all, or that is JSON but not an object. Those two refusals were
+                # recorded as untestable when what could not produce them was this helper, not the
+                # gate (R27, INVERTER F6).
+                if evidence_raw is None:
+                    evidence.write_text(json.dumps(record))
+                else:
+                    evidence.write_bytes(evidence_raw)
                 evidence_hash = digest(evidence.read_bytes())
                 cfg["proof"] = {"schema_version": 1, "probe_harness_sha256": "fixture",
                                 "checked_at": current, "configuration_hash": digest(cfg),
@@ -881,6 +928,20 @@ class ProviderEdges(unittest.TestCase):
             ("another loader policy", check(recorded, recorded_run, honest,
                                             config_changes={"loader_policy": "default"}),
              "provider is not an admitted data-only worker"),
+            # The one branch a provider record can still steer itself into. `kind` is read from the
+            # record, not from the purpose, so a provider that declares itself a Docker capability
+            # enters the branch and is refused inside it. It was recorded as reachable and always
+            # refusing, with no row and no mutant, for two rounds (R27).
+            #
+            # MEASURED, not assumed: the refusal arrives at the directory guard on the branch's first
+            # line, before the closure checks below it. The expectation this row was written with was
+            # the closure message, and the row itself corrected it. Which means the two closure
+            # conditions stay unreachable behind this guard for any provider whose executable sits in
+            # a directory the active token can augment, and they keep their recorded debt rather than
+            # a row that would have to claim more than it proves.
+            ("provider record declaring the docker kind",
+             check(recorded, recorded_run, honest, config_changes={"kind": "docker"}),
+             "executable directory is augmentable by the active token"),
             # Freshness and the bindings to this exact configuration and environment.
             ("another environment", check(recorded, recorded_run, honest, environment={"PATH": "elsewhere"}),
              "provider auth-home/runtime environment changed after host review"),
@@ -918,7 +979,13 @@ class ProviderEdges(unittest.TestCase):
                                              evidence_files=lambda path: path.name), evidence_gone),
             ("evidence file swapped for one with other bytes",
              check(recorded, recorded_run, honest, evidence_files=swapped), evidence_gone),
-            # What the evidence file must itself say.
+            # What the evidence file must itself say. The first two rows write the file's bytes
+            # directly: one is not JSON, one is JSON that is not an object. Both were recorded as
+            # having no row because the helper above could not produce them (R27).
+            ("evidence bytes are not JSON at all", check(recorded, recorded_run, honest,
+                                                         evidence_raw=b"this is not json"), substantiate),
+            ("evidence is JSON but not an object", check(recorded, recorded_run, honest,
+                                                         evidence_raw=b"[1, 2]"), substantiate),
             ("evidence of another schema", check(recorded, recorded_run, honest,
                                                  evidence_changes={"schema_version": 2}), substantiate),
             ("evidence of another purpose", check(recorded, recorded_run, honest,
