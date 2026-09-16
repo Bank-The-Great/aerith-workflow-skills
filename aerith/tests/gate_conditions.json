@@ -410,14 +410,12 @@
       "kind": "implicit",
       "text": "try measured = json.loads(raw)",
       "message": "retained evidence does not substantiate the claimed capability",
-      "disposition": "covered",
+      "disposition": "implicit",
       "rows": [
         "edges:evidence bytes are not JSON at all"
       ],
-      "mutants": [
-        "evidence_json_parse_admits"
-      ],
-      "reason": "covered at R27. The handler is exercised by a row whose evidence file is not JSON, and a mutant that stops the handler refusing changes that row's value. The extractor still calls this kind `implicit` because no mutant can delete an except clause's existence"
+      "mutants": [],
+      "reason": "a row exercises this refusal at R27: evidence whose bytes are not JSON at all reaches the handler and is refused. No mutant is bound to it, and the ledger refused the binding that was tried, because the atom is a try statement rather than a deletable condition. The row proves the refusal fires; nothing here proves the statement is load-bearing, and those are two different claims"
     },
     {
       "id": "validate_capability | selects measured_at | isinstance(measured, dict)",
