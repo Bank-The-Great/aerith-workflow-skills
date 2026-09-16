@@ -489,9 +489,10 @@ class ProviderEdges(unittest.TestCase):
     def test_capability_rejects_rewrapped_old_or_other_executable_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             evidence = Path(tmp) / "evidence.json"
-            cfg = {"argv": [sys.executable], "output": "codex-data-only",
+            cfg = {"argv": [sys.executable, "--model", "{model}"], "output": "codex-data-only",
                    "filesystem_scope": "codex-home-auth-only",
                    "loader_policy": "pe-dependent-load-system32",
+                   "auth_mode": "codex-subscription",
                    "attestation": {"mode": "provider-response-header"}}
             current = datetime.now(timezone.utc).isoformat()
             cases = ("fresh_context", "tools_disabled", "ambient_not_observed_in_output", "child_cleanup",
@@ -517,135 +518,158 @@ class ProviderEdges(unittest.TestCase):
                     validate_capability(cfg, "provider", environment=provider_environment(cfg))
 
 
-    def attested_config(self, measurement, *, limits=None, mode="recorded-response-model",
-                        checked_at=None, record_checked_at=None, evidence_written=True,
-                        relative=False, padding=0, corrupt=False):
-        """A provider config whose retained evidence holds `measurement`, for REQ-LC-022.
-
-        `record_checked_at` lets the record disagree with the evidence it names, which is the
-        rewrapped-proof shape R22-SEC-01 was about.
-        """
-        directory = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, directory, True)
-        evidence = directory / "evidence.json"
-        cfg = {"argv": [sys.executable], "output": "codex-data-only",
-               "filesystem_scope": "codex-home-auth-only",
-               "loader_policy": "pe-dependent-load-system32"}
-        if mode is not None:
-            cfg["attestation"] = {"mode": mode}
-        current = checked_at or datetime.now(timezone.utc).isoformat()
-        record = {"schema_version": 1, "purpose": "provider", "checked_at": current,
-                  "cases": {"model_attestation": {"passed": True, "measurement": measurement}}}
-        if padding:
-            record["padding"] = "x" * padding
-        evidence.write_text(json.dumps(record))
-        evidence_hash = digest(evidence.read_bytes())
-        if corrupt:
-            evidence.write_text(json.dumps(record | {"cases": {}}))
-        if not evidence_written:
-            evidence.unlink()
-        named = evidence.name if relative else str(evidence)
-        cfg["proof"] = {"checked_at": record_checked_at or current,
-                        "evidence_files": {evidence_hash: named},
-                        "cases": {"model_attestation": {"evidence_sha256": evidence_hash}}}
-        if limits is not None:
-            cfg["proof"]["limits"] = limits
-        return cfg
-
+    PROOF_CASES = ("fresh_context", "tools_disabled", "ambient_not_observed_in_output", "child_cleanup",
+                   "model_attestation", "subscription_auth_only",
+                   "dependent_load_flags_system32", "delay_imports_absent", "imports_allowlisted")
     MEASURED = {"evidenced_positive_calls": 4, "provider_response_header_calls": 0,
                 "recorded_response_model_calls": 4, "recorded_tier_withdrawn": False,
                 "unserved_echo_observable": False}
 
-    def test_attestation_facts_report_the_measurement_and_never_the_record_label(self):
+    def pinned_provider(self, measurement=None, *, mode="recorded-response-model", checked_at=None,
+                        evidence_changes=None, proof_changes=None, config_changes=None):
+        """A provider record the gate ADMITS, so the panel has something it may report.
+
+        Since round 24 the panel runs the gate, so a fixture the gate refuses can only ever
+        exercise the refusal path. A test of what the panel SHOWS therefore needs a record that
+        passes every binding, which is what this builds.
+        """
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        evidence = directory / "evidence.json"
+        cfg = {"argv": [sys.executable, "--model", "{model}"], "output": "codex-data-only",
+               "filesystem_scope": "codex-home-auth-only",
+               "loader_policy": "pe-dependent-load-system32",
+               "auth_mode": "codex-subscription", "attestation": {"mode": mode}}
+        cfg |= config_changes or {}
+        current = checked_at or datetime.now(timezone.utc).isoformat()
+        executable = digest(Path(sys.executable).read_bytes())
+        measurement = self.MEASURED if measurement is None else measurement
+        record = {"schema_version": 1, "purpose": "provider", "configuration_hash": digest(cfg),
+                  "probe_harness_sha256": "fixture", "checked_at": current,
+                  "executable_sha256": executable, "runtime_files": {},
+                  "cases": {case: {"passed": True, "measurement": (
+                      measurement if case == "model_attestation" else {"fixture": True})}
+                      for case in self.PROOF_CASES}}
+        record |= evidence_changes or {}
+        evidence.write_text(json.dumps(record))
+        evidence_hash = digest(evidence.read_bytes())
+        cfg["proof"] = {"schema_version": 1, "probe_harness_sha256": "fixture", "checked_at": current,
+                        "configuration_hash": digest(cfg), "executable_sha256": executable,
+                        "environment_hash": digest(provider_environment(cfg)),
+                        "runtime_files": {}, "evidence_files": {evidence_hash: str(evidence)},
+                        "cases": {case: {"expected": True, "observed": True, "passed": True,
+                                         "evidence_sha256": evidence_hash} for case in self.PROOF_CASES}}
+        cfg["proof"] |= proof_changes or {}
+        return cfg
+
+    def panel(self, cfg, *, pin=True):
         from project_creator.providers import attestation_facts
-        # REQ-LC-022: the record's own limits claim the opposite of the measurement on every
-        # axis. Nothing checks that block since REQ-LC-020, so a display that read it would be
-        # presenting an unchecked claim as a fact. These assertions are what forbid that.
-        lying = {"answering_model_proven": True, "echo_tested": True}
-        facts = attestation_facts(self.attested_config(self.MEASURED, limits=lying), verified=True)
-        self.assertTrue(facts["available"])
+        pins = {digest(cfg): "provider"} if pin else {}
+        with patch.dict("project_creator.providers._HOST_CAPABILITIES", pins, clear=not pin):
+            return attestation_facts(cfg)
+
+    def test_panel_reports_what_the_gate_validated_and_nothing_else(self):
+        facts = self.panel(self.pinned_provider())
         self.assertIs(facts["verified"], True)
+        self.assertIs(facts["available"], True)
+        self.assertIsNone(facts["reason"])
         self.assertIs(facts["answering_model_proven"], False)
-        self.assertIs(facts["unserved_echo_observable"], False)
         self.assertEqual(facts["evidenced_positive_calls"], 4)
         self.assertEqual(facts["recorded_response_model_calls"], 4)
+        self.assertEqual(facts["provider_response_header_calls"], 0)
         self.assertIs(facts["recorded_tier_withdrawn"], False)
-        self.assertLess(facts["evidence_age_days"], 1)
+        self.assertIs(facts["unserved_echo_observable"], False)
+        self.assertLess(facts["age_days"], 1)
         self.assertGreater(facts["expires_in_days"], 29)
+        self.assertEqual(facts["declared_evidence_floor"], "recorded-response-model")
         self.assertIn("not proven", facts["statement"])
         self.assertIn("untested", facts["statement"])
-        # R22-SEC-03: live run 3's own shape must produce a clean panel, or the warnings that
-        # carry information are read as noise.
+        # Live run 3's own shape must produce a clean panel, or the warnings that carry
+        # information are read as noise.
         self.assertEqual(facts["warnings"], [])
 
-    def test_attestation_facts_take_the_age_from_the_evidence_not_the_record(self):
-        from project_creator.providers import attestation_facts
-        # R22-SEC-01: a record can restate its own age freely; it cannot rewrite the evidence
-        # without breaking the hash it itself states. The age must come from the evidence.
-        old = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
-        fresh = datetime.now(timezone.utc).isoformat()
-        facts = attestation_facts(self.attested_config(self.MEASURED, checked_at=old,
-                                                       record_checked_at=fresh), verified=False)
-        self.assertIs(facts["verified"], False)
-        self.assertEqual(facts["record_checked_at"], fresh)
-        self.assertEqual(facts["evidence_checked_at"], old)
-        self.assertLess(facts["expires_in_days"], -50)
-        self.assertGreater(facts["evidence_age_days"], 80)
-        self.assertTrue(any("different check time" in warning for warning in facts["warnings"]))
-        self.assertTrue(any("expiry" in warning for warning in facts["warnings"]))
+    def test_readiness_owner_reports_proof_current_for_a_record_the_gate_admits(self):
+        # R23-SEC-08: no test produced `verified: true` through the readiness owner, so a mutant
+        # hardcoding that limb to False would have survived the whole suite.
+        from project_creator.cli import provider_panel
+        cfg = self.pinned_provider()
+        with patch.dict("project_creator.providers._HOST_CAPABILITIES", {digest(cfg): "provider"}):
+            verdict, facts = provider_panel(cfg)
+        self.assertEqual(verdict, "proof-current")
+        self.assertIs(facts["verified"], True)
+        self.assertEqual(facts["evidenced_positive_calls"], 4)
 
-    def test_attestation_facts_warn_before_a_call_is_spent(self):
-        from project_creator.providers import attestation_facts
+    def test_panel_shows_the_gate_refusal_and_no_numbers_at_all(self):
+        # The whole point of the collapse: when the gate refuses there is nothing measured to
+        # report, so nothing is reported. The refusal is the finding.
+        for label, cfg, pin, fragment in (
+                ("not pinned", self.pinned_provider(), False, "trusted host"),
+                ("evidence from another executable",
+                 self.pinned_provider(evidence_changes={"executable_sha256": "0" * 64}), True,
+                 "does not substantiate"),
+                ("evidence for another configuration",
+                 self.pinned_provider(evidence_changes={"configuration_hash": "c" * 64}), True,
+                 "does not substantiate"),
+                ("evidence case not passed",
+                 self.pinned_provider(evidence_changes={"cases": {
+                     case: {"passed": case != "fresh_context", "measurement": {"fixture": True}}
+                     for case in ("fresh_context", "model_attestation")}}), True,
+                 "does not substantiate"),
+                ("proof past its expiry",
+                 self.pinned_provider(checked_at=(datetime.now(timezone.utc) - timedelta(days=31)).isoformat()),
+                 True, "expired or absent"),
+                ("record states another check time",
+                 self.pinned_provider(proof_changes={"checked_at": datetime.now(timezone.utc).isoformat()}),
+                 True, "does not substantiate"),
+                ("not in a launchable shape",
+                 self.pinned_provider(config_changes={"auth_mode": "api-key"}), True, "launchable")):
+            with self.subTest(label):
+                facts = self.panel(cfg, pin=pin)
+                self.assertIs(facts["verified"], False)
+                self.assertIs(facts["available"], False)
+                self.assertIn(fragment, facts["reason"])
+                self.assertEqual(facts["warnings"], [])
+                for key in ("evidenced_positive_calls", "recorded_tier_withdrawn", "checked_at",
+                            "age_days", "expires_in_days"):
+                    self.assertNotIn(key, facts, key)
 
-        def warnings(**kwargs):
-            return attestation_facts(self.attested_config(kwargs.pop("measurement", self.MEASURED),
-                                                          **kwargs))["warnings"]
-
-        # R22-SEC-02 / R22-SPEC-07: no floor named is the one state where every launch is
-        # certain to be refused, and it produced no warning at all before this round.
-        self.assertTrue(any("no admitted attestation mode" in w for w in warnings(mode=None)))
-        # R22-SEC-04: mixed evidence under a header floor spends the call before refusing.
+    def test_panel_warnings_are_each_reachable_and_none_is_permanent(self):
+        soon = (datetime.now(timezone.utc) - timedelta(days=28)).isoformat()
+        warnings = self.panel(self.pinned_provider(checked_at=soon))["warnings"]
+        self.assertTrue(any("expires within three days" in w for w in warnings))
         mixed = self.MEASURED | {"provider_response_header_calls": 2, "recorded_response_model_calls": 2}
-        self.assertTrue(any("after the call is spent" in w
-                            for w in warnings(mode="provider-response-header", measurement=mixed)))
-        self.assertEqual(warnings(mode="provider-response-header",
-                                  measurement=self.MEASURED | {"provider_response_header_calls": 4,
-                                                               "recorded_response_model_calls": 0}), [])
-        # R22-SEC-03: the combination the harness never writes is the one worth warning about.
+        header = self.panel(self.pinned_provider(mixed, mode="provider-response-header"))["warnings"]
+        self.assertTrue(any("after the call is spent" in w for w in header))
+        header_only = self.MEASURED | {"provider_response_header_calls": 4,
+                                       "recorded_response_model_calls": 0}
+        self.assertEqual(self.panel(self.pinned_provider(header_only,
+                                                         mode="provider-response-header"))["warnings"], [])
         impossible = self.MEASURED | {"unserved_echo_observable": True}
         self.assertTrue(any("no run of this harness produces" in w
-                            for w in warnings(measurement=impossible)))
-        future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
-        self.assertTrue(any("dated in the future" in w for w in warnings(checked_at=future)))
-        soon = (datetime.now(timezone.utc) - timedelta(days=28)).isoformat()
-        self.assertTrue(any("expires within three days" in w for w in warnings(checked_at=soon)))
-        expired = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()
-        self.assertTrue(any("30-day expiry" in w for w in warnings(checked_at=expired)))
-        self.assertTrue(any("no readable check time" in w for w in warnings(checked_at="not a time")))
+                            for w in self.panel(self.pinned_provider(impossible))["warnings"]))
 
-    def test_attestation_facts_bound_their_own_read_and_never_raise(self):
+    def test_panel_never_raises_on_any_record_shape(self):
         from project_creator.providers import attestation_facts
-        # R22-SEC-07: this summary runs on records the host has not pinned, so it carries the
-        # bounds the gate gets from the pin. R22-SPEC-06: and it must not raise on any of them.
-        for label, cfg in (("no evidence file", self.attested_config(self.MEASURED, evidence_written=False)),
-                           ("relative path", self.attested_config(self.MEASURED, relative=True)),
-                           ("oversized", self.attested_config(self.MEASURED, padding=5_000_000)),
-                           ("hash mismatch", self.attested_config(self.MEASURED, corrupt=True)),
-                           ("not a mapping", "codex"),
-                           ("no proof", {"attestation": {"mode": "recorded-response-model"}}),
-                           ("proof not a mapping", {"proof": []}),
-                           ("empty", {})):
+        for label, cfg in (("not a mapping", "codex"), ("empty", {}), ("proof not a mapping", {"proof": []}),
+                           ("argv empty", {"argv": [], "output": "codex-data-only",
+                                           "filesystem_scope": "codex-home-auth-only",
+                                           "loader_policy": "pe-dependent-load-system32",
+                                           "auth_mode": "codex-subscription",
+                                           "attestation": {"mode": "recorded-response-model"}})):
             with self.subTest(label):
                 facts = attestation_facts(cfg)
+                self.assertIs(facts["verified"], False)
                 self.assertIs(facts["available"], False)
                 self.assertTrue(facts["reason"])
-                self.assertIs(facts["verified"], None)
-        self.assertIn("relative path", attestation_facts(
-            self.attested_config(self.MEASURED, relative=True))["reason"])
-        self.assertIn("larger than", attestation_facts(
-            self.attested_config(self.MEASURED, padding=5_000_000))["reason"])
-        self.assertIn("recorded hash", attestation_facts(
-            self.attested_config(self.MEASURED, corrupt=True))["reason"])
+        # A record the host HAS pinned can take the gate past its shape checks into a raise no
+        # GateError covers; the summary reports that instead of ending the command.
+        broken = {"argv": [sys.executable, "--model", "{model}"], "output": "codex-data-only",
+                  "filesystem_scope": "codex-home-auth-only",
+                  "loader_policy": "pe-dependent-load-system32", "auth_mode": "codex-subscription",
+                  "attestation": {"mode": "recorded-response-model"}, "proof": []}
+        facts = self.panel(broken)
+        self.assertIs(facts["verified"], False)
+        self.assertIn("unreadable", facts["reason"])
 
     def test_capability_admission_refuses_on_every_condition_it_states(self):
         """REQ-LC-023: one row per refusing condition of `validate_capability`, changed alone.
@@ -653,9 +677,14 @@ class ProviderEdges(unittest.TestCase):
         The list is closed on purpose (D7, D9, D10). A condition of this function with no row
         here is the coverage gap this test exists to make visible, and a review finding outside
         the list is a residual rather than a block. Two groups are deliberately absent because
-        they are unreachable for a data-only provider: the Docker-kind branch, and the
-        per-dependency absolute-path and hash checks, which a provider can never reach because
-        it is refused outright for carrying any runtime file at all (the row below).
+        they are unreachable for a data-only provider: the per-dependency absolute-path and hash
+        checks, which a provider can never reach because it is refused outright for carrying any
+        runtime file at all (the row below), and the script-in-dependencies check, unreachable
+        since the launchable shape pins argv[1:] to exactly ["--model", "{model}"]. Both are owed
+        to the verification purpose. The Docker-kind branch is absent for a DIFFERENT reason and
+        must not be read as unreachable: it is guarded by the record's own `kind`, not by purpose,
+        so a provider record carrying `kind: "docker"` reaches it and always refuses. Its
+        provider-purpose row is owed, not waived (R23-SPEC-02).
 
         One row below is deliberately not isolating: a check time without a zone is refused by
         the subtraction itself (TypeError, same handler, same message), so the explicit
@@ -677,9 +706,11 @@ class ProviderEdges(unittest.TestCase):
                   argv=None, host_pin=True):
             with tempfile.TemporaryDirectory() as tmp:
                 evidence = Path(tmp) / "evidence.json"
-                cfg = {"argv": argv or [sys.executable], "output": "codex-data-only",
+                cfg = {"argv": argv or [sys.executable, "--model", "{model}"],
+                       "output": "codex-data-only",
                        "filesystem_scope": "codex-home-auth-only",
-                       "loader_policy": "pe-dependent-load-system32"}
+                       "loader_policy": "pe-dependent-load-system32",
+                       "auth_mode": "codex-subscription"}
                 if attestation is not None:
                     cfg["attestation"] = attestation
                 cfg |= config_changes or {}
@@ -755,12 +786,12 @@ class ProviderEdges(unittest.TestCase):
             # R22-SEC-02: naming a floor asserts nothing about the world, it says which tier
             # `invoke` will enforce, so the well-formedness half of the old check is restored.
             ("no attestation block at all", check(None, header_run),
-             "provider capability names no admitted attestation mode"),
+             "provider capability is not in a launchable data-only shape"),
             ("attestation block with an extra key", check({"mode": "recorded-response-model", "echo": False},
                                                           recorded_run, honest),
-             "provider capability names no admitted attestation mode"),
+             "provider capability is not in a launchable data-only shape"),
             ("attestation naming an unknown mode", check({"mode": "trust-me"}, recorded_run, honest),
-             "provider capability names no admitted attestation mode"),
+             "provider capability is not in a launchable data-only shape"),
             # The one measured invariant that survived (REQ-LC-020).
             ("recorded tier withdrawn", check(recorded, recorded_run | {"recorded_tier_withdrawn": True}, honest),
              substantiate),
@@ -859,15 +890,32 @@ class ProviderEdges(unittest.TestCase):
                                                      evidence_changes={"executable_sha256": "0" * 64}),
              "provider executable changed after proof"),
             ("executable named by a relative path", check(recorded, recorded_run, honest,
-                                                          argv=[Path(sys.executable).name]),
+                                                          argv=[Path(sys.executable).name, "--model", "{model}"]),
              "provider executable changed after proof"),
             ("provider carrying a runtime file", check(recorded, recorded_run, honest,
                                                        proof_changes={"runtime_files": {"a": "b"}},
                                                        evidence_changes={"runtime_files": {"a": "b"}}),
              "data-only provider must be one reviewed native executable"),
+            # Since the launchable shape pins argv[1:] to exactly ["--model", "{model}"], a
+            # provider can no longer carry a script argument at all, so the script-in-dependencies
+            # check is unreachable for this purpose and the shape check is what refuses. The row
+            # asserts the refusal that actually happens; the script check is owed to verification.
             ("argv naming a script the proof does not carry",
              check(recorded, recorded_run, honest, argv=[sys.executable, "helper.py"]),
-             "provider script or binary missing from proof"),
+             "provider capability is not in a launchable data-only shape"),
+            # The launchable-shape class itself (R23-SPEC-04), one disjunct per row.
+            ("no subscription auth mode", check(recorded, recorded_run, honest,
+                                                config_changes={"auth_mode": "api-key"}),
+             "provider capability is not in a launchable data-only shape"),
+            ("argv of the wrong length", check(recorded, recorded_run, honest,
+                                               argv=[sys.executable, "--model"]),
+             "provider capability is not in a launchable data-only shape"),
+            ("argv template changed", check(recorded, recorded_run, honest,
+                                            argv=[sys.executable, "--model", "gpt-6-astra"]),
+             "provider capability is not in a launchable data-only shape"),
+            ("executable is not an exe", check(recorded, recorded_run, honest,
+                                               argv=[sys.executable + ".bat", "--model", "{model}"]),
+             "provider capability is not in a launchable data-only shape"),
         )
         for label, actual, expected in expectations:
             with self.subTest(label):

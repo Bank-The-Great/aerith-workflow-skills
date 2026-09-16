@@ -131,18 +131,42 @@ class Harness(unittest.TestCase):
         with self.assertRaisesRegex(GateError, "both tiers"):
             self.create(models={"codex": "codex-chosen-1"})
 
-    def test_every_dispatching_command_announces_the_provider_panel_first(self):
-        # R22-SPEC-04 / R22-SEC-12: the panel existed only at start, so a run resumed weeks later
-        # dispatched against a proof whose age the operator had last seen when it was fresh.
+    def test_the_panel_names_every_configured_provider_not_a_filtered_subset(self):
+        # R23-SEC-04: the old filter read a field that does not govern dispatch, so it could omit
+        # the provider about to be called. Every configured provider is announced.
         run = self.create()
-        for command in ("run", "resume"):
+        run["config"] = dict(run["config"], providers={"codex": "unreadable", "claude": "unreadable"})
+        self.store.save(run, "providers_for_panel", expected_revision=run["revision"])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            main(["--state", str(self.store.root), "run", run["id"]])
+        # The closing status line names every pinned vendor too, so asserting over all of
+        # stdout passed even when the panel was filtered. Decode the panel document alone.
+        panel, _ = json.JSONDecoder().raw_decode(out.getvalue())
+        self.assertEqual(sorted(panel["provider_attestation"]), ["claude", "codex"])
+
+    def test_every_dispatching_command_announces_the_provider_panel_first(self):
+        # R22-SPEC-04 / R22-SEC-12 / R23-SPEC-01: the panel existed only at start, so a run
+        # resumed weeks later dispatched against a proof whose age the operator had last seen
+        # when it was fresh; `review`, which spends two calls per invocation, had none at all.
+        run = self.create()
+        for command, entry in (("run", "run"), ("resume", "run"), ("review", "review_once")):
             with self.subTest(command):
                 out = io.StringIO()
-                with contextlib.redirect_stdout(out):
+                seen = {}
+                original = getattr(Engine, entry)
+
+                def spy(engine, *args, _original=original, **kwargs):
+                    # R23-SPEC-07, second attempt: the first version compared the panel against
+                    # the command's closing line, which prints last either way, so it could not
+                    # see the announce move past the dispatch. This reads stdout AT the dispatch.
+                    seen["at_dispatch"] = out.getvalue()
+                    return _original(engine, *args, **kwargs)
+
+                with contextlib.redirect_stdout(out), patch.object(Engine, entry, spy):
                     main(["--state", str(self.store.root), command, run["id"]])
-                printed = out.getvalue()
-                self.assertIn("provider_attestation", printed)
-                self.assertLess(printed.index("provider_attestation"), len(printed))
+                self.assertIn("provider_attestation", seen.get("at_dispatch", ""),
+                              "the panel must already be printed when the engine is entered")
 
     def test_cli_start_announces_the_panel_before_the_engine_runs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -158,6 +182,7 @@ class Harness(unittest.TestCase):
             printed = out.getvalue()
             self.assertIn("provider_attestation", printed)
             self.assertIn("model_declaration", printed)
+            self.assertLess(printed.index("provider_attestation"), printed.index('"status"'))
 
     def test_cli_refuses_spec_model_flags_without_a_distinct_spec_vendor(self):
         # REQ-LC-021: the spec tiers belong to a second vendor. Without one they would silently
@@ -175,6 +200,19 @@ class Harness(unittest.TestCase):
             with contextlib.redirect_stdout(out):
                 self.assertEqual(main(argv), 2)
             self.assertIn("different from --vendor", json.loads(out.getvalue())["reason"])
+
+    @unittest.skipUnless(os.name == "nt", "the reviewed-path lock is a Windows contract")
+    def test_execute_locks_the_reviewed_file_before_it_launches_anything(self):
+        """R23-SPEC-09, first asked for at R21-SEC-02: the helper's refusals were proven, the
+        call site's ordering was not, and the ordering is the whole claim."""
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "reviewed_worker.py"
+            script.write_text("print('reviewed')\n", encoding="utf-8")
+            with patch("subprocess.Popen") as popen:
+                with self.assertRaisesRegex(GateError, "reviewed file changed before launch"):
+                    execute([sys.executable, str(script)], cwd=Path(tmp),
+                            expected_executable_sha256="0" * 64)
+            popen.assert_not_called()
 
     def test_doctor_carries_the_gate_verdict_into_the_panel_it_prints(self):
         # R22-SEC-01: a panel printed beside a refusal must not read as a clean bill of health.
@@ -210,16 +248,16 @@ class Harness(unittest.TestCase):
         # pin first. Only a record the host HAS pinned can take the gate as far as reading the
         # proof, so this is the one input that exercises the AttributeError branch.
         from project_creator.cli import provider_panel
-        cfg = {"argv": [sys.executable], "output": "codex-data-only",
+        cfg = {"argv": [sys.executable, "--model", "{model}"], "output": "codex-data-only",
                "filesystem_scope": "codex-home-auth-only",
-               "loader_policy": "pe-dependent-load-system32",
+               "loader_policy": "pe-dependent-load-system32", "auth_mode": "codex-subscription",
                "attestation": {"mode": "recorded-response-model"}, "proof": []}
         with patch.dict("project_creator.providers._HOST_CAPABILITIES", {digest(cfg): "provider"}):
             verdict, facts = provider_panel(cfg)
-        self.assertEqual(verdict, "adapter unavailable")
+        self.assertIn("unreadable", verdict)
         self.assertIs(facts["available"], False)
         self.assertIs(facts["verified"], False)
-        self.assertEqual(facts["reason"], "provider record states no proof object")
+        self.assertIn("unreadable", facts["reason"])
 
     def test_doctor_reports_measured_attestation_beside_its_verdict(self):
         out = io.StringIO()

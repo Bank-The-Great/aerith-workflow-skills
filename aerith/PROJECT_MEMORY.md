@@ -235,3 +235,22 @@
   brief cites exists, and treat a reviewer's reported input gap as a finding against the round that
   dispatched it.
 
+- 2026-09-16 (round 24): the fix for a display that reported an unbound measurement was two more
+  checks on the display; the reviews then found the layer under each one. What ended it was deleting
+  the second reader: the gate already reads and binds the evidence, so it now hands the measurement
+  back and the summary reports only that. Six findings went with the design rather than with patches,
+  because a summary that opens no file needs no path, size or reparse bound and cannot be an oracle,
+  and a summary that reports nothing on a refusal cannot report it reassuringly. Forward rule: when a
+  display and a gate read the same artifact, the display is not a reader; make the gate hand back what
+  it validated, or the display will be the weaker of two readers and will eventually disagree with the
+  stronger one.
+
+- 2026-09-16 (round 24): three mutants that survived were the code telling the truth, not gaps.
+  `len(template) == 3` was subsumed by the template equality beside it, the `at` spelling of the
+  evidence check time was dead, and the script-in-argv check became unreachable once the launchable
+  shape pinned argv[1:]. Forward rules: a mutant that cannot die is a claim about the code, so read it
+  before writing a test for it - delete a subsumed condition, delete a dead one, and record an
+  unreachable one as owed to the purpose that can still reach it. And two mutants that reported
+  HARNESS_FAILURE were deleting a block header and leaving an empty body: a mutant must change
+  BEHAVIOUR, never syntax, or it measures the module loader instead of the tests.
+

@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .contracts import GateError, STAGES, digest
+from .contracts import GateError, STAGES, digest, safe_text
 from .engine import Engine, start
 from .mirror import GitHub, sync
 from .models import load_config, refresh_catalog
@@ -65,34 +65,34 @@ def parser():
 
 
 def provider_panel(adapter):
-    """The gate's verdict and the measured facts, computed once for both readiness surfaces.
+    """The gate's verdict and what it measured, from ONE call to the gate.
 
-    REQ-LC-022 with R22-SEC-01's correction: the facts carry the verdict, so a panel printed
-    beside a refusal cannot read as a clean bill of health. One owner, because `doctor` and
-    `start` disagreeing about a provider's readiness would be worse than either being wrong.
-    `AttributeError` is caught because a record that is not a mapping at all reaches the gate
-    before anything has validated its shape.
+    Since round 24 `attestation_facts` runs the gate itself and carries the refusal reason, so
+    this is a naming layer over it rather than a second decision. `doctor` wants the verdict as
+    a sentence; every other surface wants the facts, which now include it.
     """
-    try:
-        validate_capability(adapter, "provider")
-        return "proof-current", attestation_facts(adapter, verified=True)
-    except GateError as exc:
-        return str(exc), attestation_facts(adapter, verified=False)
-    except (OSError, KeyError, TypeError, AttributeError):
-        return "adapter unavailable", attestation_facts(adapter, verified=False)
+    facts = attestation_facts(adapter)
+    return ("proof-current" if facts["verified"] else facts["reason"] or "adapter unavailable"), facts
 
 
-def announce_providers(run_config, vendors, **extra):
-    """Print the measured attestation facts before the first provider call of a session.
+def announce_providers(run_config, **extra):
+    """Print what the gate measured, before the first provider call of a session.
 
-    REQ-LC-022 as corrected (R22-SPEC-04, R22-SEC-12): the first build printed this only at
+    REQ-LC-022 (R22-SPEC-04, R22-SEC-12, R23-SPEC-01): the first build printed this only at
     `start`, so a run resumed weeks later dispatched against a proof whose age the operator had
-    last been shown when it was fresh. Every command that can dispatch prints it now.
+    last been shown when it was fresh. `start`, `run`, `resume`, `answer` and `review` print it.
+
+    Every configured provider is printed, with no filter. The filter this used to carry read a
+    field that does not govern dispatch, so it could omit the provider about to be called
+    (R23-SEC-04), and two filters for one purpose is the shape this round exists to remove.
     """
     providers = run_config.get("providers") if isinstance(run_config, dict) else None
-    print(json.dumps(dict(extra, provider_attestation={
-        name: provider_panel(adapter)[1] for name, adapter in (providers or {}).items()
-        if not vendors or name in vendors}), ensure_ascii=False, indent=2))
+    panel = dict(extra, provider_attestation={
+        name: provider_panel(adapter)[1]
+        for name, adapter in (providers if isinstance(providers, dict) else {}).items()})
+    body = json.dumps(panel, ensure_ascii=False, indent=2)
+    safe_text(body)
+    print(body)
 
 
 def status(store, run):
@@ -166,8 +166,7 @@ def main(argv=None):
                            models=declaration or None, accept_catalog=args.accept_catalog_pins)
             # REQ-LC-022: the provider's MEASURED attestation facts and the gate's verdict,
             # printed before the first provider call is made.
-            announce_providers(run_config, result["model_declaration"]["vendors"],
-                               run_id=result["id"], models=result["pins"],
+            announce_providers(run_config, run_id=result["id"], models=result["pins"],
                                model_declaration=result["model_declaration"])
             if args.background:
                 background(args.state, result["id"])
@@ -182,8 +181,7 @@ def main(argv=None):
             return 0
         elif args.command == "run":
             pending = store.get(args.run_id)
-            announce_providers(pending["config"], (pending.get("model_declaration") or {}).get("vendors"),
-                               run_id=args.run_id)
+            announce_providers(pending.get("config", {}), run_id=args.run_id)
             result = Engine(store).run(args.run_id, max_steps=args.max_steps)
         else:
             result = store.get(args.run_id)
@@ -195,6 +193,7 @@ def main(argv=None):
                 result["status"] = "paused" if args.command == "pause" else "cancelled"
                 store.save(result, args.command, expected_revision=result["revision"])
             elif args.command == "review":
+                announce_providers(result.get("config", {}), run_id=args.run_id)
                 report = Engine(store).review_once(args.run_id, spec_vendor=args.spec_vendor)
                 print(json.dumps(report, ensure_ascii=False, indent=2))
                 return 0 if report["review_passed"] else 2
@@ -225,8 +224,7 @@ def main(argv=None):
                 if getattr(args, "background", False):
                     background(args.state, result["id"])
                 else:
-                    announce_providers(result["config"], (result.get("model_declaration") or {}).get("vendors"),
-                                       run_id=result["id"])
+                    announce_providers(result.get("config", {}), run_id=result["id"])
                     result = Engine(store).run(result["id"])
             elif args.command == "sync":
                 store.verify()
