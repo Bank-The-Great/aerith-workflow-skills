@@ -68,6 +68,15 @@
   that survives a kill: a `finally` runs after an exception, not after a kill.
 - Bind evidence to what the run EXECUTED. Binding a file the run never reads buys
   no integrity and costs a re-run for every edit to it.
+- Separate what a gate DOES from the account of how completely it is covered.
+  Five review rounds found nothing wrong with the first and something wrong with
+  the second every time. Report them as two verdicts, never as one.
+- A false sentence in an artifact is corrected even when the round that wrote it
+  is being abandoned. Abandoning the work is a decision; leaving the record wrong
+  is a defect.
+- When a correction cannot be made without invalidating retained evidence, leave
+  the artifact alone, write the correction where the reader will meet it, and name
+  the fix as the first thing the next run must land. Never edit evidence quietly.
 - A coverage instrument must not run inside the mutation campaign it reports
   on. A check that the inventory matches the registry fails whenever a condition
   is deleted, so every such mutant dies of bookkeeping and the campaign measures
@@ -348,3 +357,16 @@
   they do not close, and that refusal caught a real registry entry on its first run rather than a
   planted one. Forward rule: a generated number carries a machine's authority and none of its
   arithmetic; make the generator check its own partition, or it is prose with better formatting.
+
+- 2026-09-16 (round 26, and the decision to stop): the reviews failed a fifth time, again on the
+  account and not on the gate, and this time inside the section written to hold the account: the new
+  OUTSIDE heading stated 27 entries as 2 + 24 where the 2 were a subset of the 24, so three entries
+  were printed nowhere, and those three were the vendor-key delegation, the model-attestation
+  invariant and the launch-time hash-lock guard the round was built to record. Both reviewers found
+  it independently. Master Bank ruled to stop and record the rest as residual risk rather than spend
+  a sixth round inside the instrument. Two false statements from the round were corrected before
+  stopping: the arithmetic assert had never refused anything (a different control caught the entry
+  the round credited to it), and four guards had been invisible rather than three, which the round's
+  own diff showed and the round took from the reviewer instead of counting. Forward rules: every new
+  mechanism creates new surface to be wrong on, so a round that adds one should expect to be graded
+  on it; and when the measurement disagrees with the story, the story is what changes.
