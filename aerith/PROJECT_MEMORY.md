@@ -56,6 +56,18 @@
   named for. Compare what the row PRODUCED, not which row failed.
 - A verdict namespace is not a place to put caller-named keys: a provider filed
   under `verification` overwrote the check of that name and passed the gate.
+- A generated number is not a checked number. Make the generator assert its own
+  partition before it prints: the categories must sum to the population, and the
+  verdicts must sum to their denominator, or it refuses.
+- Filter a walk by the LINE it must stop at, not by the top-level statements that
+  end before it. A block that encloses the stopping point is dropped whole, and
+  everything inside it goes with it.
+- A floor that today's count already satisfies cannot fail. Assert an equality
+  against a declared number, so adding one changes the declaration too.
+- A campaign that edits the live tree owes a clean-tree pre-flight and a sentinel
+  that survives a kill: a `finally` runs after an exception, not after a kill.
+- Bind evidence to what the run EXECUTED. Binding a file the run never reads buys
+  no integrity and costs a re-run for every edit to it.
 - A coverage instrument must not run inside the mutation campaign it reports
   on. A check that the inventory matches the registry fails whenever a condition
   is deleted, so every such mutant dies of bookkeeping and the campaign measures
@@ -315,3 +327,24 @@
   given real rows. Forward rule: a control that reports on a suite must not run inside the
   measurement it reports on, and a survivor list predicted before a run is a claim to check against
   the run, not a result to write down afterwards.
+
+- 2026-09-16 (round 26): both round 25 reviews FAILED and all four P2s were in the instrument, none
+  in the gate; two were found independently by both reviewers. The extractor had claimed to refuse
+  any shape it was not taught and instead dropped one silently: an `if` whose body neither exits nor
+  assigns a decision. Three live guards were invisible that way, and one of them decided whether
+  argv[0] is hash-locked at the moment of launch. The launch mirror had the same shape of hole one
+  level up: it filtered `invoke`'s top-level statements by end line, which discarded the whole `with`
+  block holding the launch and the refusal inside it, and its `>= 4` floor could not fail when a
+  fifth precondition was added. Forward rules: record every guard, including the ones that decide
+  nothing, because "recorded as deciding nothing" is a different statement from "not recorded"; walk
+  to the line you must stop at rather than filtering the statements that end before it; and assert an
+  equality against a declared count, never a floor the present already satisfies.
+
+- 2026-09-16 (round 26): the generated block reproduced, in a machine, the failure the machine was
+  built to end. It printed a three-way split of a five-way population, an isolation sentence that
+  summed to one more than its own denominator, and a heading promising that a reader could disagree
+  with every judgement while one whole disposition was printed nowhere. Nothing on the path compared
+  the sentence with the data. The generator now asserts both sums before it prints and refuses when
+  they do not close, and that refusal caught a real registry entry on its first run rather than a
+  planted one. Forward rule: a generated number carries a machine's authority and none of its
+  arithmetic; make the generator check its own partition, or it is prose with better formatting.
