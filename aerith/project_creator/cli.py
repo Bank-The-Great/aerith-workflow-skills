@@ -64,6 +64,37 @@ def parser():
     return p
 
 
+def provider_panel(adapter):
+    """The gate's verdict and the measured facts, computed once for both readiness surfaces.
+
+    REQ-LC-022 with R22-SEC-01's correction: the facts carry the verdict, so a panel printed
+    beside a refusal cannot read as a clean bill of health. One owner, because `doctor` and
+    `start` disagreeing about a provider's readiness would be worse than either being wrong.
+    `AttributeError` is caught because a record that is not a mapping at all reaches the gate
+    before anything has validated its shape.
+    """
+    try:
+        validate_capability(adapter, "provider")
+        return "proof-current", attestation_facts(adapter, verified=True)
+    except GateError as exc:
+        return str(exc), attestation_facts(adapter, verified=False)
+    except (OSError, KeyError, TypeError, AttributeError):
+        return "adapter unavailable", attestation_facts(adapter, verified=False)
+
+
+def announce_providers(run_config, vendors, **extra):
+    """Print the measured attestation facts before the first provider call of a session.
+
+    REQ-LC-022 as corrected (R22-SPEC-04, R22-SEC-12): the first build printed this only at
+    `start`, so a run resumed weeks later dispatched against a proof whose age the operator had
+    last been shown when it was fresh. Every command that can dispatch prints it now.
+    """
+    providers = run_config.get("providers") if isinstance(run_config, dict) else None
+    print(json.dumps(dict(extra, provider_attestation={
+        name: provider_panel(adapter)[1] for name, adapter in (providers or {}).items()
+        if not vendors or name in vendors}), ensure_ascii=False, indent=2))
+
+
 def status(store, run):
     return {key: run.get(key) for key in ("id", "status", "stage", "branch", "worktree", "vendor", "spec_vendor", "questions", "last_error", "delivery_commit", "last_receipt", "mirror_status")} | {
         "models": run["pins"], "model_declaration": run.get("model_declaration"),
@@ -97,14 +128,9 @@ def main(argv=None):
                 cfg = load_config(args.config)
                 checks["providers_configured"] = bool(cfg.get("providers"))
                 for vendor, adapter in cfg.get("providers", {}).items():
-                    try:
-                        validate_capability(adapter, "provider")
-                        checks[vendor] = "proof-current"
-                    except (GateError, OSError, KeyError) as exc:
-                        checks[vendor] = str(exc) if isinstance(exc, GateError) else "adapter unavailable"
-                    # REQ-LC-022: measured, and reported even when the gate refuses, because the
-                    # reason a proof is refused is usually in these numbers.
-                    attestation[vendor] = attestation_facts(adapter)
+                    # REQ-LC-022: the facts are reported even when the gate refuses, because the
+                    # reason for a refusal is usually in these numbers, and they carry the verdict.
+                    checks[vendor], attestation[vendor] = provider_panel(adapter)
                 try:
                     validate_capability(cfg.get("verification_sandbox", {}), "verification")
                     checks["verification"] = "proof-current"
@@ -138,15 +164,11 @@ def main(argv=None):
             result = start(store, args.project, args.objective, run_config, load_config(args.catalog), args.vendor,
                            spec_vendor=args.spec_vendor, standalone=args.standalone,
                            models=declaration or None, accept_catalog=args.accept_catalog_pins)
-            # REQ-LC-022: the provider's MEASURED attestation facts, printed before the first
-            # provider call is made, never read from the record's own attestation or limits.
-            print(json.dumps({"run_id": result["id"], "models": result["pins"],
-                              "model_declaration": result["model_declaration"],
-                              "provider_attestation": {
-                                  name: attestation_facts(adapter)
-                                  for name, adapter in run_config.get("providers", {}).items()
-                                  if name in result["model_declaration"]["vendors"]}},
-                             ensure_ascii=False, indent=2))
+            # REQ-LC-022: the provider's MEASURED attestation facts and the gate's verdict,
+            # printed before the first provider call is made.
+            announce_providers(run_config, result["model_declaration"]["vendors"],
+                               run_id=result["id"], models=result["pins"],
+                               model_declaration=result["model_declaration"])
             if args.background:
                 background(args.state, result["id"])
             else:
@@ -159,6 +181,9 @@ def main(argv=None):
             print(json.dumps({"recovery_started": launched}))
             return 0
         elif args.command == "run":
+            pending = store.get(args.run_id)
+            announce_providers(pending["config"], (pending.get("model_declaration") or {}).get("vendors"),
+                               run_id=args.run_id)
             result = Engine(store).run(args.run_id, max_steps=args.max_steps)
         else:
             result = store.get(args.run_id)
@@ -200,6 +225,8 @@ def main(argv=None):
                 if getattr(args, "background", False):
                     background(args.state, result["id"])
                 else:
+                    announce_providers(result["config"], (result.get("model_declaration") or {}).get("vendors"),
+                                       run_id=result["id"])
                     result = Engine(store).run(result["id"])
             elif args.command == "sync":
                 store.verify()

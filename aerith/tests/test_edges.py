@@ -518,67 +518,134 @@ class ProviderEdges(unittest.TestCase):
 
 
     def attested_config(self, measurement, *, limits=None, mode="recorded-response-model",
-                        checked_at=None, evidence_written=True):
-        """A provider config whose retained evidence holds `measurement`, for REQ-LC-022."""
+                        checked_at=None, record_checked_at=None, evidence_written=True,
+                        relative=False, padding=0, corrupt=False):
+        """A provider config whose retained evidence holds `measurement`, for REQ-LC-022.
+
+        `record_checked_at` lets the record disagree with the evidence it names, which is the
+        rewrapped-proof shape R22-SEC-01 was about.
+        """
         directory = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory, True)
         evidence = directory / "evidence.json"
         cfg = {"argv": [sys.executable], "output": "codex-data-only",
                "filesystem_scope": "codex-home-auth-only",
-               "loader_policy": "pe-dependent-load-system32", "attestation": {"mode": mode}}
+               "loader_policy": "pe-dependent-load-system32"}
+        if mode is not None:
+            cfg["attestation"] = {"mode": mode}
         current = checked_at or datetime.now(timezone.utc).isoformat()
         record = {"schema_version": 1, "purpose": "provider", "checked_at": current,
                   "cases": {"model_attestation": {"passed": True, "measurement": measurement}}}
+        if padding:
+            record["padding"] = "x" * padding
         evidence.write_text(json.dumps(record))
         evidence_hash = digest(evidence.read_bytes())
+        if corrupt:
+            evidence.write_text(json.dumps(record | {"cases": {}}))
         if not evidence_written:
             evidence.unlink()
-        cfg["proof"] = {"checked_at": current, "evidence_files": {evidence_hash: str(evidence)},
+        named = evidence.name if relative else str(evidence)
+        cfg["proof"] = {"checked_at": record_checked_at or current,
+                        "evidence_files": {evidence_hash: named},
                         "cases": {"model_attestation": {"evidence_sha256": evidence_hash}}}
         if limits is not None:
             cfg["proof"]["limits"] = limits
         return cfg
 
+    MEASURED = {"evidenced_positive_calls": 4, "provider_response_header_calls": 0,
+                "recorded_response_model_calls": 4, "recorded_tier_withdrawn": False,
+                "unserved_echo_observable": False}
+
     def test_attestation_facts_report_the_measurement_and_never_the_record_label(self):
         from project_creator.providers import attestation_facts
-        measured = {"evidenced_positive_calls": 4, "provider_response_header_calls": 0,
-                    "recorded_response_model_calls": 4, "recorded_tier_withdrawn": False,
-                    "unserved_echo_observable": False}
         # REQ-LC-022: the record's own limits claim the opposite of the measurement on every
         # axis. Nothing checks that block since REQ-LC-020, so a display that read it would be
         # presenting an unchecked claim as a fact. These assertions are what forbid that.
         lying = {"answering_model_proven": True, "echo_tested": True}
-        facts = attestation_facts(self.attested_config(measured, limits=lying))
+        facts = attestation_facts(self.attested_config(self.MEASURED, limits=lying), verified=True)
         self.assertTrue(facts["available"])
+        self.assertIs(facts["verified"], True)
         self.assertIs(facts["answering_model_proven"], False)
         self.assertIs(facts["unserved_echo_observable"], False)
         self.assertEqual(facts["evidenced_positive_calls"], 4)
         self.assertEqual(facts["recorded_response_model_calls"], 4)
         self.assertIs(facts["recorded_tier_withdrawn"], False)
-        self.assertLess(facts["proof_age_days"], 1)
-        self.assertGreater(facts["proof_expires_in_days"], 29)
+        self.assertLess(facts["evidence_age_days"], 1)
+        self.assertGreater(facts["expires_in_days"], 29)
         self.assertIn("not proven", facts["statement"])
-        self.assertTrue(any("untested" in warning for warning in facts["warnings"]))
+        self.assertIn("untested", facts["statement"])
+        # R22-SEC-03: live run 3's own shape must produce a clean panel, or the warnings that
+        # carry information are read as noise.
+        self.assertEqual(facts["warnings"], [])
 
-    def test_attestation_facts_warn_before_a_call_is_spent_and_never_raise(self):
+    def test_attestation_facts_take_the_age_from_the_evidence_not_the_record(self):
         from project_creator.providers import attestation_facts
-        recorded_only = {"evidenced_positive_calls": 4, "provider_response_header_calls": 0,
-                         "recorded_response_model_calls": 4, "recorded_tier_withdrawn": False,
-                         "unserved_echo_observable": True}
-        header_floor = attestation_facts(self.attested_config(recorded_only, mode="provider-response-header"))
-        self.assertTrue(any("expected to be refused" in warning for warning in header_floor["warnings"]))
-        recorded_floor = attestation_facts(self.attested_config(recorded_only))
-        self.assertEqual(recorded_floor["warnings"], [])
-        old = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()
-        expired = attestation_facts(self.attested_config(recorded_only, checked_at=old))
-        self.assertTrue(any("expiry" in warning for warning in expired["warnings"]))
-        self.assertLess(expired["proof_expires_in_days"], 0)
-        # A summary that refuses to print is a summary nobody reads; the gate still refuses.
-        missing = attestation_facts(self.attested_config(recorded_only, evidence_written=False))
-        self.assertFalse(missing["available"])
-        self.assertIn("unreadable", missing["reason"])
-        self.assertIs(attestation_facts({})["available"], False)
-        self.assertIs(attestation_facts({"proof": {"cases": {"model_attestation": {}}}})["available"], False)
+        # R22-SEC-01: a record can restate its own age freely; it cannot rewrite the evidence
+        # without breaking the hash it itself states. The age must come from the evidence.
+        old = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+        fresh = datetime.now(timezone.utc).isoformat()
+        facts = attestation_facts(self.attested_config(self.MEASURED, checked_at=old,
+                                                       record_checked_at=fresh), verified=False)
+        self.assertIs(facts["verified"], False)
+        self.assertEqual(facts["record_checked_at"], fresh)
+        self.assertEqual(facts["evidence_checked_at"], old)
+        self.assertLess(facts["expires_in_days"], -50)
+        self.assertGreater(facts["evidence_age_days"], 80)
+        self.assertTrue(any("different check time" in warning for warning in facts["warnings"]))
+        self.assertTrue(any("expiry" in warning for warning in facts["warnings"]))
+
+    def test_attestation_facts_warn_before_a_call_is_spent(self):
+        from project_creator.providers import attestation_facts
+
+        def warnings(**kwargs):
+            return attestation_facts(self.attested_config(kwargs.pop("measurement", self.MEASURED),
+                                                          **kwargs))["warnings"]
+
+        # R22-SEC-02 / R22-SPEC-07: no floor named is the one state where every launch is
+        # certain to be refused, and it produced no warning at all before this round.
+        self.assertTrue(any("no admitted attestation mode" in w for w in warnings(mode=None)))
+        # R22-SEC-04: mixed evidence under a header floor spends the call before refusing.
+        mixed = self.MEASURED | {"provider_response_header_calls": 2, "recorded_response_model_calls": 2}
+        self.assertTrue(any("after the call is spent" in w
+                            for w in warnings(mode="provider-response-header", measurement=mixed)))
+        self.assertEqual(warnings(mode="provider-response-header",
+                                  measurement=self.MEASURED | {"provider_response_header_calls": 4,
+                                                               "recorded_response_model_calls": 0}), [])
+        # R22-SEC-03: the combination the harness never writes is the one worth warning about.
+        impossible = self.MEASURED | {"unserved_echo_observable": True}
+        self.assertTrue(any("no run of this harness produces" in w
+                            for w in warnings(measurement=impossible)))
+        future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+        self.assertTrue(any("dated in the future" in w for w in warnings(checked_at=future)))
+        soon = (datetime.now(timezone.utc) - timedelta(days=28)).isoformat()
+        self.assertTrue(any("expires within three days" in w for w in warnings(checked_at=soon)))
+        expired = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()
+        self.assertTrue(any("30-day expiry" in w for w in warnings(checked_at=expired)))
+        self.assertTrue(any("no readable check time" in w for w in warnings(checked_at="not a time")))
+
+    def test_attestation_facts_bound_their_own_read_and_never_raise(self):
+        from project_creator.providers import attestation_facts
+        # R22-SEC-07: this summary runs on records the host has not pinned, so it carries the
+        # bounds the gate gets from the pin. R22-SPEC-06: and it must not raise on any of them.
+        for label, cfg in (("no evidence file", self.attested_config(self.MEASURED, evidence_written=False)),
+                           ("relative path", self.attested_config(self.MEASURED, relative=True)),
+                           ("oversized", self.attested_config(self.MEASURED, padding=5_000_000)),
+                           ("hash mismatch", self.attested_config(self.MEASURED, corrupt=True)),
+                           ("not a mapping", "codex"),
+                           ("no proof", {"attestation": {"mode": "recorded-response-model"}}),
+                           ("proof not a mapping", {"proof": []}),
+                           ("empty", {})):
+            with self.subTest(label):
+                facts = attestation_facts(cfg)
+                self.assertIs(facts["available"], False)
+                self.assertTrue(facts["reason"])
+                self.assertIs(facts["verified"], None)
+        self.assertIn("relative path", attestation_facts(
+            self.attested_config(self.MEASURED, relative=True))["reason"])
+        self.assertIn("larger than", attestation_facts(
+            self.attested_config(self.MEASURED, padding=5_000_000))["reason"])
+        self.assertIn("recorded hash", attestation_facts(
+            self.attested_config(self.MEASURED, corrupt=True))["reason"])
 
     def test_capability_admission_refuses_on_every_condition_it_states(self):
         """REQ-LC-023: one row per refusing condition of `validate_capability`, changed alone.
@@ -685,7 +752,15 @@ class ProviderEdges(unittest.TestCase):
              "admitted"),
             ("recorded mode, limits overstate the proof",
              check(recorded, recorded_run, honest | {"answering_model_proven": True}), "admitted"),
-            ("no attestation block at all", check(None, header_run), "admitted"),
+            # R22-SEC-02: naming a floor asserts nothing about the world, it says which tier
+            # `invoke` will enforce, so the well-formedness half of the old check is restored.
+            ("no attestation block at all", check(None, header_run),
+             "provider capability names no admitted attestation mode"),
+            ("attestation block with an extra key", check({"mode": "recorded-response-model", "echo": False},
+                                                          recorded_run, honest),
+             "provider capability names no admitted attestation mode"),
+            ("attestation naming an unknown mode", check({"mode": "trust-me"}, recorded_run, honest),
+             "provider capability names no admitted attestation mode"),
             # The one measured invariant that survived (REQ-LC-020).
             ("recorded tier withdrawn", check(recorded, recorded_run | {"recorded_tier_withdrawn": True}, honest),
              substantiate),

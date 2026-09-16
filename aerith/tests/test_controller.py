@@ -131,6 +131,34 @@ class Harness(unittest.TestCase):
         with self.assertRaisesRegex(GateError, "both tiers"):
             self.create(models={"codex": "codex-chosen-1"})
 
+    def test_every_dispatching_command_announces_the_provider_panel_first(self):
+        # R22-SPEC-04 / R22-SEC-12: the panel existed only at start, so a run resumed weeks later
+        # dispatched against a proof whose age the operator had last seen when it was fresh.
+        run = self.create()
+        for command in ("run", "resume"):
+            with self.subTest(command):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    main(["--state", str(self.store.root), command, run["id"]])
+                printed = out.getvalue()
+                self.assertIn("provider_attestation", printed)
+                self.assertLess(printed.index("provider_attestation"), len(printed))
+
+    def test_cli_start_announces_the_panel_before_the_engine_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "config.json"
+            config.write_text(json.dumps(self.config))
+            catalog_file = Path(tmp) / "catalog.json"
+            catalog_file.write_text(json.dumps(catalog()))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                main(["--state", str(Path(tmp) / "state"), "start", "--project", str(self.project),
+                      "--config", str(config), "--catalog", str(catalog_file), "--vendor", "codex",
+                      "--objective", "announce the panel", "--accept-catalog-pins"])
+            printed = out.getvalue()
+            self.assertIn("provider_attestation", printed)
+            self.assertIn("model_declaration", printed)
+
     def test_cli_refuses_spec_model_flags_without_a_distinct_spec_vendor(self):
         # REQ-LC-021: the spec tiers belong to a second vendor. Without one they would silently
         # overwrite the author's declaration, which is the shape this refusal exists to stop.
@@ -147,6 +175,51 @@ class Harness(unittest.TestCase):
             with contextlib.redirect_stdout(out):
                 self.assertEqual(main(argv), 2)
             self.assertIn("different from --vendor", json.loads(out.getvalue())["reason"])
+
+    def test_doctor_carries_the_gate_verdict_into_the_panel_it_prints(self):
+        # R22-SEC-01: a panel printed beside a refusal must not read as a clean bill of health.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "config.json"
+            config.write_text(json.dumps({"providers": {"codex": {"output": "codex-data-only"}}}))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(main(["doctor", "--config", str(config)]), 2)
+            report = json.loads(out.getvalue())
+            self.assertIn("codex", report["checks"])
+            self.assertNotEqual(report["checks"]["codex"], "proof-current")
+            self.assertIs(report["provider_attestation"]["codex"]["verified"], False)
+
+    def test_doctor_survives_a_malformed_provider_entry(self):
+        # R22-SPEC-06 / R22-SEC-05b: both of these used to leave doctor with a traceback, because
+        # neither AttributeError nor a non-mapping record was handled anywhere on the path.
+        for label, entry in (("record is a string", "oops"), ("proof is not a mapping", {"proof": []})):
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                config = Path(tmp) / "config.json"
+                config.write_text(json.dumps({"providers": {"codex": entry}}))
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    self.assertEqual(main(["doctor", "--config", str(config)]), 2)
+                report = json.loads(out.getvalue())
+                self.assertNotEqual(report["checks"]["codex"], "proof-current")
+                self.assertIs(report["provider_attestation"]["codex"]["available"], False)
+                self.assertIs(report["provider_attestation"]["codex"]["verified"], False)
+                self.assertTrue(report["provider_attestation"]["codex"]["reason"])
+
+    def test_panel_handles_a_pinned_record_whose_proof_is_not_a_mapping(self):
+        # The CLI cases above never reach this path: an unpinned record is refused by the host
+        # pin first. Only a record the host HAS pinned can take the gate as far as reading the
+        # proof, so this is the one input that exercises the AttributeError branch.
+        from project_creator.cli import provider_panel
+        cfg = {"argv": [sys.executable], "output": "codex-data-only",
+               "filesystem_scope": "codex-home-auth-only",
+               "loader_policy": "pe-dependent-load-system32",
+               "attestation": {"mode": "recorded-response-model"}, "proof": []}
+        with patch.dict("project_creator.providers._HOST_CAPABILITIES", {digest(cfg): "provider"}):
+            verdict, facts = provider_panel(cfg)
+        self.assertEqual(verdict, "adapter unavailable")
+        self.assertIs(facts["available"], False)
+        self.assertIs(facts["verified"], False)
+        self.assertEqual(facts["reason"], "provider record states no proof object")
 
     def test_doctor_reports_measured_attestation_beside_its_verdict(self):
         out = io.StringIO()
@@ -548,8 +621,10 @@ class Contracts(unittest.TestCase):
         declared = declare_pin(pin, "codex-chosen-1", "codex-chosen-2")
         self.assertEqual(model_for({"codex": declared}, "codex", "to-spec")[1], "codex-chosen-1")
         self.assertEqual(model_for({"codex": declared}, "codex", "implement")[1], "codex-chosen-2")
-        for highest, second in (("same", "same"), ("bad id", "other"), (None, "other"), ("ok", 5)):
-            with self.subTest(highest=highest), self.assertRaisesRegex(GateError, "two distinct valid model ids"):
+        # R22-SEC-09: an unhashable id must refuse as a GateError, not a TypeError from set().
+        for highest, second in (("same", "same"), ("bad id", "other"), (None, "other"), ("ok", 5),
+                                ([], []), ({"a": 1}, "other")):
+            with self.subTest(highest=repr(highest)), self.assertRaisesRegex(GateError, "two distinct valid model ids"):
                 declare_pin(pin, highest, second)
 
     def test_expired_catalog_not_guessed(self):
@@ -585,6 +660,34 @@ class Contracts(unittest.TestCase):
             self.assertEqual(result.stdout, "ภาษาไทย")
             with self.assertRaisesRegex(GateError, "timeout"):
                 execute([sys.executable, "-c", "import time; time.sleep(10)"], cwd=Path(tmp), timeout=0.2)
+
+    @unittest.skipUnless(os.name == "nt", "the reviewed-path lock is a Windows contract")
+    def test_reviewed_launch_lock_refuses_every_way_it_states(self):
+        """R22-SPEC-01(b): the lock had only a success-path test, so none of its refusals was
+        exercised. This is what makes "the executable we proved" hold at the moment of launch."""
+        from project_creator.processes import _reviewed_locks
+        shaped = "a" * 64
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "reviewed.bin"
+            target.write_bytes(b"reviewed bytes")
+            real = digest(target.read_bytes())
+            argv = [str(target)]
+            cases = (
+                ("closure is not a mapping", (real, [], argv), "invalid reviewed runtime closure"),
+                ("closure name is not a string", (real, {1: shaped}, argv), "invalid reviewed runtime closure"),
+                ("closure hash is not a digest", (real, {str(target): "nope"}, argv),
+                 "invalid reviewed runtime closure"),
+                ("two hashes for one file", (real, {str(target): shaped}, argv),
+                 "conflicting reviewed file hashes"),
+                ("relative reviewed path", (real, {"relative.bin": shaped}, argv),
+                 "reviewed runtime path is not immutable"),
+                ("file changed before launch", (shaped, {}, argv), "reviewed file changed before launch"),
+            )
+            for label, args, message in cases:
+                with self.subTest(label), self.assertRaisesRegex(GateError, message):
+                    locks = _reviewed_locks(*args)
+                    for lock in locks:
+                        lock.close()
 
     def test_reviewed_executable_and_runtime_are_locked_for_real_launch(self):
         with tempfile.TemporaryDirectory() as tmp:

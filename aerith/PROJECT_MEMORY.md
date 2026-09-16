@@ -212,3 +212,26 @@
   reviews will be spent on the label rather than the fact; and when a row for condition B must pass
   through condition A, route it through an input A does not judge, or the row proves nothing about B.
 
+- 2026-09-16 (round 23, answering the round 22 reviews): the display built to replace a removed
+  certification repeated the defect it replaced. `attestation_facts` was written to report what the
+  evidence measured, and then took the proof's AGE from the record rather than from the evidence, so
+  a proof rewrapped around old evidence printed as fresh and warning-free beside the very refusal it
+  caused, and `doctor` printed that panel next to the refusal with nothing saying the gate had
+  refused. Two more of the same shape: the removal of the attestation certification also removed the
+  requirement that a record NAME a floor, which certifies nothing and only says which tier the call
+  path will enforce, so the readiness surfaces reported a record ready when every launch of it was
+  certain to be refused; and a warning that fired on every admissible record made the two warnings
+  that carry information unreadable. Forward rules: when a check is replaced by a DISPLAY, every
+  field on that display must name where it came from, and the gate's verdict must travel with it,
+  because a panel beside a refusal is read as a verdict whether or not it claims to be one. When a
+  check is removed for being unfounded, split it first: the half that asserts something about the
+  world goes, the half that only requires the record to be well formed stays. And a warning that
+  cannot be absent is not a warning, it is a sentence, so put it in the statement.
+
+- 2026-09-16 (round 23): a review's own input gap is a defect of the round, not of the reviewer. Both
+  round 22 reviewers reported that `review_r21_sec.txt` did not exist and worked from second-hand
+  summaries; the same gap had been reported in round 21 and was recorded as fixed when only three of
+  four files had been saved. Forward rule: before dispatching a review, assert that every path the
+  brief cites exists, and treat a reviewer's reported input gap as a finding against the round that
+  dispatched it.
+

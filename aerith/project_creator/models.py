@@ -64,8 +64,10 @@ def declare_pin(pin: dict, highest, second_highest) -> dict:
     exists; it records which models the operator chose, and `declared_by` says who chose.
     """
     ids = [highest, second_highest]
-    if (len(set(ids)) != 2
-            or not all(isinstance(model, str) and re.fullmatch(MODEL_ID, model) for model in ids)):
+    # Shape before distinctness: `set(ids)` on an unhashable id raises TypeError, not GateError
+    # (R22-SEC-09), and this function is reachable as an API, not only through argparse.
+    if (not all(isinstance(model, str) and re.fullmatch(MODEL_ID, model) for model in ids)
+            or len(set(ids)) != 2):
         raise GateError("declared model profile must be two distinct valid model ids")
     return pin | {"highest": ids[0], "second-highest": ids[1], "declared_by": "operator"}
 
