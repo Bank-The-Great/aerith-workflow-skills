@@ -16,8 +16,10 @@
   "lock": "tests/test_controller.py"
  },
  "launch_exempt": {
-  "model in arg": "reads the model chosen for this call, not the record; the gate never sees a model"
+  "model in arg": "reads the model chosen for this call, not the record; the gate never sees a model",
+  "any(inference_cwd.iterdir())": "reads the temporary inference directory this call just created, not the record; the gate has no such directory. Round 25's mirror could not see this one at all because it sits inside the block that encloses the launch (R25-SEC-01, R25-SPEC-06)"
  },
+ "launch_precondition_count": 4,
  "conditions": [
   {
    "id": "validate_capability | capability is not pinned by the trusted host admission registry | _HOST_CAPABILITIES.get(digest(config)) != purpose",
@@ -42,14 +44,16 @@
    "kind": "condition",
    "text": "purpose == 'provider'",
    "message": "provider is not an admitted data-only worker",
-   "disposition": "structural",
+   "disposition": "covered",
    "rows": [
-    "edges:another output kind"
+    "edges:another output kind",
+    "edges:another filesystem scope",
+    "edges:another loader policy"
    ],
    "mutants": [
     "provider_shape_unchecked"
    ],
-   "reason": "purpose scope: the data-only worker check does not apply to the verification purpose"
+   "reason": "also the purpose scope: the data-only worker check does not apply to the verification purpose"
   },
   {
    "id": "validate_capability | provider is not an admitted data-only worker | config.get('output') not in _ADMITTED_PROVIDER_OUTPUTS",
@@ -400,12 +404,12 @@
    "reason": ""
   },
   {
-   "id": "validate_capability | via valid | try measured = json.loads(raw)",
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | try measured = json.loads(raw)",
    "module": "project_creator/providers.py",
    "function": "validate_capability",
    "kind": "implicit",
    "text": "try measured = json.loads(raw)",
-   "message": "via valid",
+   "message": "retained evidence does not substantiate the claimed capability",
    "disposition": "implicit",
    "rows": [],
    "mutants": [],
@@ -436,24 +440,24 @@
    "reason": "selection: the case is read only from an object"
   },
   {
-   "id": "validate_capability | via valid | isinstance(measured, dict)",
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | isinstance(measured, dict)",
    "module": "project_creator/providers.py",
    "function": "validate_capability",
    "kind": "condition",
    "text": "isinstance(measured, dict)",
-   "message": "via valid",
+   "message": "retained evidence does not substantiate the claimed capability",
    "disposition": "debt",
    "rows": [],
    "mutants": [],
    "reason": "no row: the row helper writes the evidence through json.dumps of a mapping, so it cannot produce an evidence file that is not an object"
   },
   {
-   "id": "validate_capability | via valid | measured.get('schema_version') == 1",
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | measured.get('schema_version') == 1",
    "module": "project_creator/providers.py",
    "function": "validate_capability",
    "kind": "condition",
    "text": "measured.get('schema_version') == 1",
-   "message": "via valid",
+   "message": "retained evidence does not substantiate the claimed capability",
    "disposition": "covered",
    "rows": [
     "edges:evidence of another schema"
@@ -464,12 +468,12 @@
    "reason": ""
   },
   {
-   "id": "validate_capability | via valid | measured.get('purpose') == purpose",
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | measured.get('purpose') == purpose",
    "module": "project_creator/providers.py",
    "function": "validate_capability",
    "kind": "condition",
    "text": "measured.get('purpose') == purpose",
-   "message": "via valid",
+   "message": "retained evidence does not substantiate the claimed capability",
    "disposition": "covered",
    "rows": [
     "edges:evidence of another purpose"
@@ -480,12 +484,12 @@
    "reason": ""
   },
   {
-   "id": "validate_capability | via valid | measured.get('configuration_hash') == expected",
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | measured.get('configuration_hash') == expected",
    "module": "project_creator/providers.py",
    "function": "validate_capability",
    "kind": "condition",
    "text": "measured.get('configuration_hash') == expected",
-   "message": "via valid",
+   "message": "retained evidence does not substantiate the claimed capability",
    "disposition": "covered",
    "rows": [
     "edges:evidence for another configuration"
@@ -496,12 +500,12 @@
    "reason": ""
   },
   {
-   "id": "validate_capability | via valid | isinstance(measured_case, dict)",
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | isinstance(measured_case, dict)",
    "module": "project_creator/providers.py",
    "function": "validate_capability",
    "kind": "condition",
    "text": "isinstance(measured_case, dict)",
-   "message": "via valid",
+   "message": "retained evidence does not substantiate the claimed capability",
    "disposition": "covered",
    "rows": [
     "edges:evidence case that is not a mapping"
@@ -512,12 +516,12 @@
    "reason": ""
   },
   {
-   "id": "validate_capability | via valid | measured_case.get('passed') is True",
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | measured_case.get('passed') is True",
    "module": "project_creator/providers.py",
    "function": "validate_capability",
    "kind": "condition",
    "text": "measured_case.get('passed') is True",
-   "message": "via valid",
+   "message": "retained evidence does not substantiate the claimed capability",
    "disposition": "covered",
    "rows": [
     "edges:evidence case not passed"
@@ -528,12 +532,12 @@
    "reason": ""
   },
   {
-   "id": "validate_capability | via valid | isinstance(measured_case.get('measurement'), dict)",
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | isinstance(measured_case.get('measurement'), dict)",
    "module": "project_creator/providers.py",
    "function": "validate_capability",
    "kind": "condition",
    "text": "isinstance(measured_case.get('measurement'), dict)",
-   "message": "via valid",
+   "message": "retained evidence does not substantiate the claimed capability",
    "disposition": "covered",
    "rows": [
     "edges:evidence case measurement not a mapping"
@@ -544,12 +548,12 @@
    "reason": ""
   },
   {
-   "id": "validate_capability | via valid | bool(measured_case['measurement'])",
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | bool(measured_case['measurement'])",
    "module": "project_creator/providers.py",
    "function": "validate_capability",
    "kind": "condition",
    "text": "bool(measured_case['measurement'])",
-   "message": "via valid",
+   "message": "retained evidence does not substantiate the claimed capability",
    "disposition": "covered",
    "rows": [
     "edges:evidence case with an empty measurement"
@@ -560,12 +564,12 @@
    "reason": ""
   },
   {
-   "id": "validate_capability | via valid | measured.get('probe_harness_sha256') == proof.get('probe_harness_sha256')",
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | measured.get('probe_harness_sha256') == proof.get('probe_harness_sha256')",
    "module": "project_creator/providers.py",
    "function": "validate_capability",
    "kind": "condition",
    "text": "measured.get('probe_harness_sha256') == proof.get('probe_harness_sha256')",
-   "message": "via valid",
+   "message": "retained evidence does not substantiate the claimed capability",
    "disposition": "covered",
    "rows": [
     "edges:evidence from another harness"
@@ -576,12 +580,12 @@
    "reason": ""
   },
   {
-   "id": "validate_capability | via valid | bool(measured.get('probe_harness_sha256'))",
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | bool(measured.get('probe_harness_sha256'))",
    "module": "project_creator/providers.py",
    "function": "validate_capability",
    "kind": "condition",
    "text": "bool(measured.get('probe_harness_sha256'))",
-   "message": "via valid",
+   "message": "retained evidence does not substantiate the claimed capability",
    "disposition": "covered",
    "rows": [
     "edges:no harness identity on either side"
@@ -592,12 +596,12 @@
    "reason": ""
   },
   {
-   "id": "validate_capability | via valid | measured_at == proof.get('checked_at')",
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | measured_at == proof.get('checked_at')",
    "module": "project_creator/providers.py",
    "function": "validate_capability",
    "kind": "condition",
    "text": "measured_at == proof.get('checked_at')",
-   "message": "via valid",
+   "message": "retained evidence does not substantiate the claimed capability",
    "disposition": "covered",
    "rows": [
     "edges:evidence from an older run"
@@ -608,12 +612,12 @@
    "reason": ""
   },
   {
-   "id": "validate_capability | via valid | measured.get('executable_sha256') == proof.get('executable_sha256')",
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | measured.get('executable_sha256') == proof.get('executable_sha256')",
    "module": "project_creator/providers.py",
    "function": "validate_capability",
    "kind": "condition",
    "text": "measured.get('executable_sha256') == proof.get('executable_sha256')",
-   "message": "via valid",
+   "message": "retained evidence does not substantiate the claimed capability",
    "disposition": "covered",
    "rows": [
     "edges:evidence from another executable"
@@ -624,12 +628,12 @@
    "reason": ""
   },
   {
-   "id": "validate_capability | via valid | measured.get('runtime_files') == proof.get('runtime_files', {})",
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | measured.get('runtime_files') == proof.get('runtime_files', {})",
    "module": "project_creator/providers.py",
    "function": "validate_capability",
    "kind": "condition",
    "text": "measured.get('runtime_files') == proof.get('runtime_files', {})",
-   "message": "via valid",
+   "message": "retained evidence does not substantiate the claimed capability",
    "disposition": "covered",
    "rows": [
     "edges:evidence naming other runtime files"
@@ -676,18 +680,30 @@
    "reason": "selection: which case carries the model measurement"
   },
   {
-   "id": "validate_capability | via valid | _model_attestation_measured(measured_case['measurement'])",
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | _model_attestation_measured(measured_case['measurement'])",
    "module": "project_creator/providers.py",
    "function": "validate_capability",
    "kind": "expression",
    "text": "_model_attestation_measured(measured_case['measurement'])",
-   "message": "via valid",
+   "message": "retained evidence does not substantiate the claimed capability",
    "disposition": "structural",
    "rows": [],
    "mutants": [
     "attestation_case_not_bound"
    ],
    "reason": "delegation; the invariant's own conditions are inventoried in _model_attestation_measured"
+  },
+  {
+   "id": "validate_capability | guards staged = {'measurement': measured_case['measurement'], 'checked_at': measured_at | valid",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "expression",
+   "text": "valid",
+   "message": "guards staged = {'measurement': measured_case['measurement'], 'checked_at': measured_at",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "relay: the measurement is staged only when the evidence it came from was validated"
   },
   {
    "id": "validate_capability | retained evidence does not substantiate the claimed capability | not valid",
@@ -844,6 +860,18 @@
    "rows": [],
    "mutants": [],
    "reason": "unreachable for a provider; owed to the verification purpose"
+  },
+  {
+   "id": "validate_capability | guards observed.update(staged) | observed is not None",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "expression",
+   "text": "observed is not None",
+   "message": "guards observed.update(staged)",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "the caller asked for the measurement or did not; `invoke` passes no sink, and a mutant that removes it is `measurement_not_handed_back`, which the panel rows kill"
   },
   {
    "id": "_launch_refusal | only the codex vendor key may launch a reviewed data-only worker | name != 'codex'",
@@ -1171,20 +1199,36 @@
    "reason": ""
   },
   {
+   "id": "_reviewed_locks | guards reviewed[argv[0]] = executable_hash | executable_hash is not None",
+   "module": "project_creator/processes.py",
+   "function": "_reviewed_locks",
+   "kind": "expression",
+   "text": "executable_hash is not None",
+   "message": "guards reviewed[argv[0]] = executable_hash",
+   "disposition": "covered",
+   "rows": [
+    "lock:file changed before launch"
+   ],
+   "mutants": [
+    "executable_never_locked_at_launch"
+   ],
+   "reason": "decides whether argv[0] is hash-locked at the moment of launch, which is the property REQ-LC-023 names; round 25 dropped it silently (R25-SPEC-02)"
+  },
+  {
    "id": "_reviewed_locks | conflicting reviewed file hashes | name in reviewed",
    "module": "project_creator/processes.py",
    "function": "_reviewed_locks",
    "kind": "condition",
    "text": "name in reviewed",
    "message": "conflicting reviewed file hashes",
-   "disposition": "structural",
+   "disposition": "covered",
    "rows": [
     "lock:two hashes for one file"
    ],
    "mutants": [
     "conflicting_hashes_allowed"
    ],
-   "reason": "scope: the conflict test applies only to a name already reviewed"
+   "reason": "also the scope of the conflict test: it applies only to a name already reviewed"
   },
   {
    "id": "_reviewed_locks | conflicting reviewed file hashes | reviewed[name] != value",
@@ -1265,6 +1309,18 @@
    "rows": [],
    "mutants": [],
    "reason": "no row: a junction fixture is owed"
+  },
+  {
+   "id": "_locked_windows_reviewed_path | guards stream.close() | stream",
+   "module": "project_creator/processes.py",
+   "function": "_locked_windows_reviewed_path",
+   "kind": "expression",
+   "text": "stream",
+   "message": "guards stream.close()",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "cleanup: close the handle only if it was opened"
   },
   {
    "id": "_locked_windows_reviewed_path | could not lock reviewed path ancestry | handle == invalid",

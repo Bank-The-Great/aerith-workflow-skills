@@ -83,7 +83,11 @@ class GateCoverageInstrument(unittest.TestCase):
                 else:
                     self.assertIn(atom.text, registry["launch_exempt"],
                                   "a launch precondition that reads more than the record is listed by name")
-        self.assertGreaterEqual(checked, 4, "the launch preconditions were not found at all")
+        # An equality, not a floor. Round 25 asserted `>= 4`, which a NEW precondition could not
+        # fail: adding one inside the block that encloses the launch left the count at 4 and the
+        # check green (R25-SEC-01). Changing this number is now part of changing `invoke`.
+        self.assertEqual(checked, registry["launch_precondition_count"],
+                         "invoke's record-only preconditions changed; the registry must say so")
 
     def test_the_inventory_refuses_what_it_does_not_understand(self):
         """The extractor's own refusals, because a control never seen to refuse is unproven.
@@ -95,8 +99,6 @@ class GateCoverageInstrument(unittest.TestCase):
         cases = {
             "a shape with no pattern": "def gate(x):\n    while x:\n        raise GateError('no')\n",
             "a refusal with no condition": "def gate(x):\n    raise GateError('always')\n",
-            "a compound test on a branch that cannot refuse":
-                "def gate(x):\n    if x.a and x.b:\n        x.c = 1\n    if x.d:\n        raise GateError('no')\n",
             "a handler this module cannot read":
                 "def gate(x):\n    try:\n        x.read()\n    except OSError:\n        return 7\n",
             "a function with no condition at all": "def gate(x):\n    return x\n",
@@ -110,6 +112,15 @@ class GateCoverageInstrument(unittest.TestCase):
             "def gate(x):\n    y = 1 if x.a and x.b else 2\n    if y:\n        raise GateError('no')\n",
             "fixture", ["gate"])
         self.assertEqual({atom.text for atom in hidden}, {"x.a", "x.b", "y"})
+        # The same rule for a guard whose body neither exits nor decides anything a refusal reads.
+        # Round 25 dropped that shape silently, and one such guard decided whether the launch-time
+        # hash lock covers the executable at all (R25-SPEC-02). It is recorded, not refused: the
+        # gate has guards of exactly this shape, and what matters is that each is disposed of.
+        guarded, _ = gate_inventory.extract(
+            "def gate(x):\n    if x.a:\n        x.c = 1\n    if x.d:\n        raise GateError('no')\n",
+            "fixture", ["gate"])
+        self.assertEqual({(atom.kind, atom.text) for atom in guarded},
+                         {("expression", "x.a"), ("condition", "x.d")})
         # And the round 24 shape of `invoke`, whose vendor key the gate could not see.
         round24 = ("_ADMITTED = {'codex-data-only'}\n\n\n"
                    "class CLIProvider:\n"

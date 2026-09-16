@@ -58,11 +58,19 @@ def record_row_values(name: str, values: dict) -> None:
     import json
     import os
 
+    import re
+
     directory = os.environ.get("PROJECT_CREATOR_ROW_ACTUALS")
     if not directory:
         return
+    # The name decides a filename, so it is a name and nothing else: no separator, no parent, no
+    # drive, and the file must not already exist (R25-SEC-07).
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
+        raise ValueError("a row-value sink name is a plain identifier")
     target = os.path.join(directory, name + ".json")
-    with open(target, "w", encoding="utf-8") as stream:
+    if os.path.dirname(os.path.abspath(target)) != os.path.abspath(directory):
+        raise ValueError("a row-value sink writes inside the directory it was given")
+    with open(target, "x", encoding="utf-8") as stream:
         json.dump({f"{name}:{label}": value for label, value in values.items()}, stream, indent=1, sort_keys=True)
 
 
@@ -103,9 +111,26 @@ def _flatten(node: ast.expr) -> list[ast.expr]:
     return [node] if element is None else _flatten(element)
 
 
-def _exits(statements) -> bool:
-    return any(isinstance(inner, (ast.Raise, ast.Return)) for statement in statements
-               for inner in ast.walk(statement))
+def _preceding(statements, line: int):
+    """Every statement that runs before `line`, descending into the block that contains it.
+
+    Round 25 filtered the function's TOP-LEVEL statements by end line, which silently discarded
+    the whole `with` block that holds the launch, and with it a refusal inside that block
+    (R25-SEC-01, R25-SPEC-06). A statement enclosing the launch is opened rather than dropped.
+    """
+    kept = []
+    for statement in statements:
+        if statement.lineno > line:
+            break
+        if (statement.end_lineno or statement.lineno) < line:
+            kept.append(statement)
+            continue
+        for field in ("body", "orelse", "finalbody"):
+            inner = getattr(statement, field, None)
+            if isinstance(inner, list) and inner and isinstance(inner[0], ast.stmt):
+                kept.extend(_preceding(inner, line))
+        break
+    return kept
 
 
 class _Walker:
@@ -184,26 +209,17 @@ class _Walker:
                 # through to a None return that a caller turns into a refusal.
                 refusal = f"via {self.function}"
             self._conditions(node.test, refusal)
-        elif _exits(node.body) or _exits(node.orelse) or self._decides(node):
-            # A scope guard: it cannot refuse by itself, but what it guards can. It is named by
-            # what it guards, because two guards on one test are otherwise indistinguishable.
+        else:
+            # Every other `if` is a guard. It cannot refuse by itself, and some of them decide
+            # nothing a refusal reads, but all of them are RECORDED, because round 25 shipped a
+            # version that silently dropped the ones whose bodies neither exit nor assign a
+            # decision — and one of those decided whether the launch-time hash lock covers the
+            # executable at all (R25-SPEC-02). A guard is named by what it guards, because two
+            # guards on one test are otherwise indistinguishable.
             self._conditions(node.test, "guards " + ast.unparse(node.body[0]).splitlines()[0][:80],
                              kind="expression")
-        else:
-            # An if with no raise, no return and no decision inside it cannot refuse. Its test is
-            # still claimed so the closed-world sweep does not mistake it for a hidden condition.
-            for inner in ast.walk(node.test):
-                self.claimed.add(id(inner))
-            if isinstance(node.test, ast.BoolOp):
-                raise Unrecognised(f"{self.function}: compound test on a non-refusing branch "
-                                   f"{ast.unparse(node.test)[:70]}")
         self.body([s for s in node.body if s is not exit_], message)
         self.body(node.orelse, message)
-
-    def _decides(self, node: ast.If) -> bool:
-        return any(isinstance(inner, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id in self.decisions for target in inner.targets)
-            for inner in ast.walk(node))
 
     def _try(self, node: ast.Try, message: str) -> None:
         converts = None  # the refusal an exception inside this block is turned into, if any
@@ -244,6 +260,28 @@ class _Walker:
                 for test in inner.ifs:
                     if id(test) not in self.claimed:
                         self._conditions(test, f"selects {target}", kind="expression")
+
+    def resolve_relays(self) -> None:
+        """Name a conjunct by the refusal it causes, not by the local that carries it.
+
+        `valid = (A and B and ...)` followed by `if not valid: raise GateError(M)` used to leave
+        every conjunct labelled `via valid`, which no row could be checked against (R25-SEC-06).
+        The label becomes M, so a row that claims to cover a conjunct can be compared with what
+        that row asserts.
+        """
+        refusals = {}
+        for atom in self.atoms:
+            name = atom.text[4:] if atom.text.startswith("not ") else atom.text
+            if (name in self.decisions and atom.message
+                    and not atom.message.startswith(("via ", "guards ", "selects "))):
+                refusals[name] = atom.message
+        if not refusals:
+            return
+        self.atoms = [atom if atom.message[4:] not in refusals or not atom.message.startswith("via ")
+                      else Atom(id=f"{atom.function} | {refusals[atom.message[4:]]} | {atom.text}",
+                                module=atom.module, function=atom.function, kind=atom.kind,
+                                text=atom.text, message=refusals[atom.message[4:]])
+                      for atom in self.atoms]
 
     def sweep(self, function: ast.FunctionDef) -> None:
         """Refuse on any conditional construct no pattern consumed."""
@@ -293,6 +331,7 @@ def extract(source: str, module: str, functions: list[str]):
         walker = _Walker(module, name, callees)
         walker.scoped = set(functions)
         walker.body(function.body, "")
+        walker.resolve_relays()
         walker.sweep(function)
         if not any(atom.kind == "condition" for atom in walker.atoms):
             raise Unrecognised(f"{name}: no condition extracted")
@@ -337,7 +376,7 @@ def launch_preconditions(source: str, cls: str = "CLIProvider", method: str = "i
         raise Unrecognised(f"{method} never calls {launch}")
     walker = _Walker("providers", method, _package_callees(tree))
     walker.scoped = set()
-    walker.body([statement for statement in function.body if statement.end_lineno < first_launch], "")
+    walker.body(_preceding(function.body, first_launch), "")
     locals_ = _local_sources(function)
     parameters = {argument.arg for argument in function.args.args}
     module_names = ({node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))}
