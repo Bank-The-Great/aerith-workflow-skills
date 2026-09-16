@@ -16,7 +16,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from project_creator.contracts import (GateError, criteria, digest, safe_relative, ticket_order, validate_review)
 from project_creator.engine import Engine, RESOURCE_FILES, configure_runtime_resources, start
-from project_creator.models import catalog_pin, model_for, refresh_catalog
+from project_creator.models import accept_pin, catalog_pin, declare_pin, model_for, refresh_catalog
 from project_creator.store import Store, atomic_text, exclusive
 from project_creator.workspace import (configure_git, git, propose_edits, reconcile_edits,
                                        snapshot, project_lock, repo_git, _overwrite_existing)
@@ -94,7 +94,67 @@ class Harness(unittest.TestCase):
         self.temp.cleanup()
 
     def create(self, **kwargs):
+        # REQ-LC-021: a run never acquires its models by default. Tests about other
+        # behaviour take the catalog-confirmed path an operator would take.
+        kwargs.setdefault("accept_catalog", True)
         return start(self.store, self.project, "Make increment add one", self.config, catalog(), "codex", **kwargs)
+
+
+    def test_a_run_never_acquires_its_models_by_default(self):
+        # REQ-LC-021. The refusal is the point: before D10 a run took whatever the catalog
+        # proposed, and nobody had said so.
+        with self.assertRaisesRegex(GateError, "accept the catalog pins"):
+            start(self.store, self.project, "No models chosen", self.config, catalog(), "codex")
+
+    def test_declared_models_replace_the_catalog_proposal_and_are_recorded(self):
+        run = self.create(accept_catalog=False,
+                          models={"codex": {"highest": "codex-chosen-1", "second-highest": "codex-chosen-2"}})
+        self.assertEqual(run["pins"]["codex"]["highest"], "codex-chosen-1")
+        self.assertEqual(run["pins"]["codex"]["second-highest"], "codex-chosen-2")
+        self.assertEqual(run["pins"]["codex"]["declared_by"], "operator")
+        self.assertEqual(run["model_declaration"]["vendors"]["codex"], "operator")
+        self.assertTrue(run["model_declaration"]["at"])
+        # A vendor the operator did not name stays unusable rather than inheriting a pin.
+        self.assertIsNone(run["pins"].get("claude", {}).get("declared_by"))
+        with self.assertRaisesRegex(GateError, "no operator-declared model profile"):
+            model_for(run["pins"], "claude", "to-spec")
+
+    def test_accepting_the_catalog_covers_the_handoff_pins_it_shows(self):
+        run = self.create()
+        for vendor, pin in run["pins"].items():
+            self.assertEqual(pin["declared_by"], "catalog-confirmed", vendor)
+            self.assertEqual(run["model_declaration"]["vendors"][vendor], "catalog-confirmed")
+
+    def test_declaration_cannot_name_a_vendor_the_run_has_no_pin_for(self):
+        with self.assertRaisesRegex(GateError, "no pin for"):
+            self.create(models={"nowhere": {"highest": "a", "second-highest": "b"}})
+        with self.assertRaisesRegex(GateError, "both tiers"):
+            self.create(models={"codex": "codex-chosen-1"})
+
+    def test_cli_refuses_spec_model_flags_without_a_distinct_spec_vendor(self):
+        # REQ-LC-021: the spec tiers belong to a second vendor. Without one they would silently
+        # overwrite the author's declaration, which is the shape this refusal exists to stop.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "config.json"
+            config.write_text(json.dumps(self.config))
+            catalog_file = Path(tmp) / "catalog.json"
+            catalog_file.write_text(json.dumps(catalog()))
+            argv = ["--state", str(Path(tmp) / "state"), "start", "--project", str(self.project),
+                    "--config", str(config), "--catalog", str(catalog_file), "--vendor", "codex",
+                    "--objective", "declare the models", "--spec-model-highest", "a",
+                    "--spec-model-second", "b"]
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(main(argv), 2)
+            self.assertIn("different from --vendor", json.loads(out.getvalue())["reason"])
+
+    def test_doctor_reports_measured_attestation_beside_its_verdict(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(main(["doctor"]), 2)
+        # REQ-LC-022: the key is always present, so an operator never has to know whether the
+        # display happened to be built for this run.
+        self.assertEqual(json.loads(out.getvalue())["provider_attestation"], {})
 
     def test_full_pipeline_delivers_branch_not_source(self):
         initial = (self.project / "calc.py").read_text()
@@ -126,7 +186,7 @@ class Harness(unittest.TestCase):
         config["read_set"].append("new.py")
         config["write_set"].append("new.py")
         with self.assertRaisesRegex(GateError, "existing tracked files only"):
-            start(self.store, self.project, "Create a file", config, catalog(), "codex")
+            start(self.store, self.project, "Create a file", config, catalog(), "codex", accept_catalog=True)
         self.assertEqual(self.log, [])
 
     def test_cross_scope_case_collision_is_refused(self):
@@ -134,7 +194,7 @@ class Harness(unittest.TestCase):
         config["read_set"] = ["calc.py"]
         config["write_set"] = ["CALC.py"]
         with self.assertRaisesRegex(GateError, "case collision"):
-            start(self.store, self.project, "Edit one file", config, catalog(), "codex")
+            start(self.store, self.project, "Edit one file", config, catalog(), "codex", accept_catalog=True)
 
     def test_required_clean_filter_is_never_invoked_by_controller(self):
         (self.project / ".gitattributes").write_text("calc.py filter=hostile\n", encoding="utf-8")
@@ -336,7 +396,7 @@ class Harness(unittest.TestCase):
         run = self.create()
         other = Store(self.root / "other-state", create=True)
         try:
-            second = start(other, self.project, "Other", self.config, catalog(), "codex")
+            second = start(other, self.project, "Other", self.config, catalog(), "codex", accept_catalog=True)
             with exclusive(project_lock(Path(run["git_dir"]))):
                 with self.assertRaisesRegex(GateError, "another worker"):
                     Engine(other).run(second["id"], max_steps=1)
@@ -473,10 +533,24 @@ class Contracts(unittest.TestCase):
 
     def test_role_pin_survives_catalog_update(self):
         data = catalog()
-        old = catalog_pin(data, "codex")
+        old = accept_pin(catalog_pin(data, "codex"))
         data["project_creator"]["vendors"]["codex"]["highest"] = "codex-top-2"
         self.assertEqual(model_for({"codex": old}, "codex", "to-spec")[1], "codex-top-1")
         self.assertEqual(catalog_pin(data, "codex")["highest"], "codex-top-2")
+
+    def test_undeclared_pin_is_not_usable(self):
+        # REQ-LC-021: a pin the run carries for a later handoff is not a chosen model, so a
+        # resume or review that switches to it must refuse rather than inherit it silently.
+        pin = catalog_pin(catalog(), "codex")
+        with self.assertRaisesRegex(GateError, "no operator-declared model profile"):
+            model_for({"codex": pin}, "codex", "to-spec")
+        self.assertEqual(model_for({"codex": accept_pin(pin)}, "codex", "to-spec")[1], "codex-top-1")
+        declared = declare_pin(pin, "codex-chosen-1", "codex-chosen-2")
+        self.assertEqual(model_for({"codex": declared}, "codex", "to-spec")[1], "codex-chosen-1")
+        self.assertEqual(model_for({"codex": declared}, "codex", "implement")[1], "codex-chosen-2")
+        for highest, second in (("same", "same"), ("bad id", "other"), (None, "other"), ("ok", 5)):
+            with self.subTest(highest=highest), self.assertRaisesRegex(GateError, "two distinct valid model ids"):
+                declare_pin(pin, highest, second)
 
     def test_expired_catalog_not_guessed(self):
         data = catalog()

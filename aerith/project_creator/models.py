@@ -52,10 +52,38 @@ def catalog_pin(catalog: dict, vendor: str, *, at=None) -> dict:
         raise GateError("incomplete model catalog") from exc
 
 
+MODEL_ID = r"[a-zA-Z0-9._-]{1,100}"
+
+
+def declare_pin(pin: dict, highest, second_highest) -> dict:
+    """The operator's explicit two-tier declaration, replacing the catalog's proposal.
+
+    REQ-LC-021. Both tiers are required because `TIERS` sends the first three stages to the
+    highest tier and the last three to the second-highest, so one id cannot describe a run.
+    The catalog's shape rules still apply. A declaration is never evidence that a model
+    exists; it records which models the operator chose, and `declared_by` says who chose.
+    """
+    ids = [highest, second_highest]
+    if (len(set(ids)) != 2
+            or not all(isinstance(model, str) and re.fullmatch(MODEL_ID, model) for model in ids)):
+        raise GateError("declared model profile must be two distinct valid model ids")
+    return pin | {"highest": ids[0], "second-highest": ids[1], "declared_by": "operator"}
+
+
+def accept_pin(pin: dict) -> dict:
+    """The catalog's proposal, accepted as it stands by an operator who was shown it."""
+    return pin | {"declared_by": "catalog-confirmed"}
+
+
 def model_for(pins: dict, author: str, stage: str, review_vendor=None):
     vendor = review_vendor if stage == "spec-review" and review_vendor else author
     if vendor not in pins:
         raise GateError("requested vendor has no run-pinned model profile")
+    # REQ-LC-021: a run never acquires its models by default. Pins the run carries for a
+    # later handoff are undeclared until an operator declares or accepts them, so a resume
+    # or review that switches vendor cannot silently inherit a profile nobody chose.
+    if not pins[vendor].get("declared_by"):
+        raise GateError("vendor has no operator-declared model profile for this run")
     return vendor, pins[vendor][TIERS[stage]]
 
 

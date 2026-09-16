@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .contracts import (GateError, STAGES, artifact, criteria, digest, parse_artifact,
                         safe_relative, safe_text, ticket_order, validate_review)
-from .models import catalog_pin, model_for
+from .models import accept_pin, catalog_pin, declare_pin, model_for
 from .admission import verify_package, admission_stopped
 from .providers import CLIProvider, VerificationRunner
 from .processes import stable_directory
@@ -87,7 +87,7 @@ def validate_run_config(config):
 
 
 def start(store: Store, project: Path, objective: str, config: dict, catalog: dict,
-          vendor: str, *, spec_vendor=None, standalone=None):
+          vendor: str, *, spec_vendor=None, standalone=None, models=None, accept_catalog=False):
     validate_run_config(config)
     safe_text(objective)
     if not objective.strip():
@@ -103,18 +103,43 @@ def start(store: Store, project: Path, objective: str, config: dict, catalog: di
         # filter, hook, pager, editor or repository helper is invoked.
         scoped = list(set(config["read_set"] + config["write_set"]))
         source_scope_clean(project, git_dir, base, scoped)
-    pins = {name: catalog_pin(catalog, name) for name in {vendor, spec_vendor or vendor}}
+    selected = {vendor, spec_vendor or vendor}
+    pins = {name: catalog_pin(catalog, name) for name in selected}
     for name in catalog.get("project_creator", {}).get("vendors", {}):
         if name not in pins:
             try:
                 pins[name] = catalog_pin(catalog, name)
             except GateError:
                 pass  # Never selected implicitly; unavailable for later handoff.
+    # REQ-LC-021: the operator declares both tiers for every vendor this run will use, or
+    # accepts the catalog's proposal having been shown it. A run never acquires its models
+    # by default, and pins kept for a later handoff stay undeclared until someone chooses
+    # them (`model_for` refuses an undeclared pin).
+    declared = models or {}
+    if not isinstance(declared, dict) or set(declared) - set(pins):
+        raise GateError("model declaration names a vendor this run has no pin for")
+    for name in sorted(pins):
+        choice = declared.get(name)
+        if isinstance(choice, dict):
+            pins[name] = declare_pin(pins[name], choice.get("highest"), choice.get("second-highest"))
+        elif choice is not None:
+            raise GateError("model declaration must give both tiers for a vendor")
+        elif accept_catalog:
+            # Blanket acceptance covers the handoff pins too, and every pin it covers is
+            # printed back to the operator at start (REQ-LC-022), so nothing is confirmed
+            # unseen. Without it, only the vendors named above are usable at all.
+            pins[name] = accept_pin(pins[name])
+    for name in sorted(selected):
+        if not pins[name].get("declared_by"):
+            raise GateError("declare both model tiers for %s, or accept the catalog pins" % name)
+    declaration = {"at": now(), "vendors": {name: pins[name]["declared_by"] for name in sorted(pins)
+                                            if pins[name].get("declared_by")}}
     rid = "pc-" + uuid.uuid4().hex[:16]
     run = {"id": rid, "project": str(project), "git_dir": str(git_dir),
            "git_dir_identity": repository["git_dir_identity"],
            "objective": objective, "config": config,
-           "config_hash": digest(config), "pins": pins, "vendor": vendor, "spec_vendor": spec_vendor,
+           "config_hash": digest(config), "pins": pins, "model_declaration": declaration,
+           "vendor": vendor, "spec_vendor": spec_vendor,
            "standalone": standalone, "stage": standalone or STAGES[0], "status": "ready", "base": base,
            "branch": "project-creator/" + rid,
            "worktree": str(store.root / "worktrees" / rid),
@@ -489,7 +514,8 @@ class Engine:
         self.assert_frozen(run, root, frozen)
         receipt = {"source_hash": frozen["hash"], "artifacts": dict(run["artifacts"]),
                    "ticket_artifacts": dict(run["ticket_artifacts"]), "tests": tests,
-                   "reviews": reports, "models": run["pins"], "scope": sorted(scope),
+                   "reviews": reports, "models": run["pins"],
+                   "model_declaration": run.get("model_declaration"), "scope": sorted(scope),
                    "review_attempt_id": active["id"], "evidence_binding": evidence_binding}
         receipt_hash = digest(receipt)
         atomic_text(self.store.root / run_id / "receipts" / (receipt_hash + ".json"), json.dumps(receipt, ensure_ascii=False, indent=2))

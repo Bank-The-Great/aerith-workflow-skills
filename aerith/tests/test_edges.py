@@ -1,10 +1,11 @@
 """Parser/adapter unit fixtures, not substitutes for live containment probes."""
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -255,19 +256,6 @@ class ProviderEdges(unittest.TestCase):
                 with self.assertRaisesRegex(GateError, "one reviewed native executable"):
                     provider.invoke("implement", "chosen", packet, Path.cwd())
                 self.assertEqual(launched, [])
-
-    def test_recorded_mode_capability_states_exact_limits(self):
-        from project_creator import providers
-        for limits in ({"answering_model_proven": False, "echo_tested": False},
-                       {"answering_model_proven": False, "echo_tested": True}):
-            self.assertEqual(providers._recorded_mode_limits({"limits": limits}), limits)
-        for limits in (None, {}, {"answering_model_proven": False},
-                       {"answering_model_proven": True, "echo_tested": False},
-                       {"answering_model_proven": 0, "echo_tested": False},
-                       {"answering_model_proven": False, "echo_tested": 1},
-                       {"answering_model_proven": False, "echo_tested": False, "model": "chosen"}):
-            with self.subTest(limits=limits), self.assertRaisesRegex(GateError, "must state its limits"):
-                providers._recorded_mode_limits({} if limits is None else {"limits": limits})
 
     def test_data_only_codex_rejects_wrong_stage_shape_locally(self):
         packet = {"instructions": "controller-only instructions"}
@@ -528,7 +516,86 @@ class ProviderEdges(unittest.TestCase):
                 with self.assertRaisesRegex(GateError, "does not substantiate"):
                     validate_capability(cfg, "provider", environment=provider_environment(cfg))
 
-    def test_capability_binds_its_attestation_mode_to_the_measured_attestation(self):
+
+    def attested_config(self, measurement, *, limits=None, mode="recorded-response-model",
+                        checked_at=None, evidence_written=True):
+        """A provider config whose retained evidence holds `measurement`, for REQ-LC-022."""
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        evidence = directory / "evidence.json"
+        cfg = {"argv": [sys.executable], "output": "codex-data-only",
+               "filesystem_scope": "codex-home-auth-only",
+               "loader_policy": "pe-dependent-load-system32", "attestation": {"mode": mode}}
+        current = checked_at or datetime.now(timezone.utc).isoformat()
+        record = {"schema_version": 1, "purpose": "provider", "checked_at": current,
+                  "cases": {"model_attestation": {"passed": True, "measurement": measurement}}}
+        evidence.write_text(json.dumps(record))
+        evidence_hash = digest(evidence.read_bytes())
+        if not evidence_written:
+            evidence.unlink()
+        cfg["proof"] = {"checked_at": current, "evidence_files": {evidence_hash: str(evidence)},
+                        "cases": {"model_attestation": {"evidence_sha256": evidence_hash}}}
+        if limits is not None:
+            cfg["proof"]["limits"] = limits
+        return cfg
+
+    def test_attestation_facts_report_the_measurement_and_never_the_record_label(self):
+        from project_creator.providers import attestation_facts
+        measured = {"evidenced_positive_calls": 4, "provider_response_header_calls": 0,
+                    "recorded_response_model_calls": 4, "recorded_tier_withdrawn": False,
+                    "unserved_echo_observable": False}
+        # REQ-LC-022: the record's own limits claim the opposite of the measurement on every
+        # axis. Nothing checks that block since REQ-LC-020, so a display that read it would be
+        # presenting an unchecked claim as a fact. These assertions are what forbid that.
+        lying = {"answering_model_proven": True, "echo_tested": True}
+        facts = attestation_facts(self.attested_config(measured, limits=lying))
+        self.assertTrue(facts["available"])
+        self.assertIs(facts["answering_model_proven"], False)
+        self.assertIs(facts["unserved_echo_observable"], False)
+        self.assertEqual(facts["evidenced_positive_calls"], 4)
+        self.assertEqual(facts["recorded_response_model_calls"], 4)
+        self.assertIs(facts["recorded_tier_withdrawn"], False)
+        self.assertLess(facts["proof_age_days"], 1)
+        self.assertGreater(facts["proof_expires_in_days"], 29)
+        self.assertIn("not proven", facts["statement"])
+        self.assertTrue(any("untested" in warning for warning in facts["warnings"]))
+
+    def test_attestation_facts_warn_before_a_call_is_spent_and_never_raise(self):
+        from project_creator.providers import attestation_facts
+        recorded_only = {"evidenced_positive_calls": 4, "provider_response_header_calls": 0,
+                         "recorded_response_model_calls": 4, "recorded_tier_withdrawn": False,
+                         "unserved_echo_observable": True}
+        header_floor = attestation_facts(self.attested_config(recorded_only, mode="provider-response-header"))
+        self.assertTrue(any("expected to be refused" in warning for warning in header_floor["warnings"]))
+        recorded_floor = attestation_facts(self.attested_config(recorded_only))
+        self.assertEqual(recorded_floor["warnings"], [])
+        old = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()
+        expired = attestation_facts(self.attested_config(recorded_only, checked_at=old))
+        self.assertTrue(any("expiry" in warning for warning in expired["warnings"]))
+        self.assertLess(expired["proof_expires_in_days"], 0)
+        # A summary that refuses to print is a summary nobody reads; the gate still refuses.
+        missing = attestation_facts(self.attested_config(recorded_only, evidence_written=False))
+        self.assertFalse(missing["available"])
+        self.assertIn("unreadable", missing["reason"])
+        self.assertIs(attestation_facts({})["available"], False)
+        self.assertIs(attestation_facts({"proof": {"cases": {"model_attestation": {}}}})["available"], False)
+
+    def test_capability_admission_refuses_on_every_condition_it_states(self):
+        """REQ-LC-023: one row per refusing condition of `validate_capability`, changed alone.
+
+        The list is closed on purpose (D7, D9, D10). A condition of this function with no row
+        here is the coverage gap this test exists to make visible, and a review finding outside
+        the list is a residual rather than a block. Two groups are deliberately absent because
+        they are unreachable for a data-only provider: the Docker-kind branch, and the
+        per-dependency absolute-path and hash checks, which a provider can never reach because
+        it is refused outright for carrying any runtime file at all (the row below).
+
+        One row below is deliberately not isolating: a check time without a zone is refused by
+        the subtraction itself (TypeError, same handler, same message), so the explicit
+        `tzinfo is None` disjunct cannot be distinguished by any input and its mutant is
+        equivalent. The row is kept because the refusal is what matters to an operator; the
+        redundancy is recorded here rather than hidden behind a test that appears to cover it.
+        """
         cases = ("fresh_context", "tools_disabled", "ambient_not_observed_in_output", "child_cleanup",
                  "model_attestation", "subscription_auth_only",
                  "dependent_load_flags_system32", "delay_imports_absent", "imports_allowlisted")
@@ -538,14 +605,17 @@ class ProviderEdges(unittest.TestCase):
         header_run = recorded_run | {"provider_response_header_calls": 4, "recorded_response_model_calls": 0}
         honest = {"answering_model_proven": False, "echo_tested": False}
 
-        def check(attestation, measurement, limits=None, evidence_changes=None, proof_changes=None):
+        def check(attestation, measurement, limits=None, evidence_changes=None, proof_changes=None,
+                  config_changes=None, case_changes=None, evidence_files=None, environment=None,
+                  argv=None, host_pin=True):
             with tempfile.TemporaryDirectory() as tmp:
                 evidence = Path(tmp) / "evidence.json"
-                cfg = {"argv": [sys.executable], "output": "codex-data-only",
+                cfg = {"argv": argv or [sys.executable], "output": "codex-data-only",
                        "filesystem_scope": "codex-home-auth-only",
                        "loader_policy": "pe-dependent-load-system32"}
                 if attestation is not None:
                     cfg["attestation"] = attestation
+                cfg |= config_changes or {}
                 current = datetime.now(timezone.utc).isoformat()
                 executable = digest(Path(sys.executable).read_bytes())
                 record = {"schema_version": 1, "purpose": "provider", "configuration_hash": digest(cfg),
@@ -566,52 +636,163 @@ class ProviderEdges(unittest.TestCase):
                                                  "evidence_sha256": evidence_hash} for case in cases}}
                 if limits is not None:
                     cfg["proof"]["limits"] = limits
+                if case_changes is not None:
+                    cfg["proof"]["cases"]["model_attestation"] |= case_changes
+                if evidence_files is not None:
+                    cfg["proof"]["evidence_files"] = {evidence_hash: evidence_files(evidence)}
                 cfg["proof"] |= proof_changes or {}
-                with patch.dict("project_creator.providers._HOST_CAPABILITIES", {digest(cfg): "provider"}):
+                # A None in proof_changes deletes the key, which is how an absent field is tested.
+                cfg["proof"] = {key: value for key, value in cfg["proof"].items() if value is not None}
+                pins = {digest(cfg): "provider"} if host_pin else {}
+                with patch.dict("project_creator.providers._HOST_CAPABILITIES", pins, clear=not host_pin):
                     try:
-                        validate_capability(cfg, "provider", environment=provider_environment(cfg))
+                        validate_capability(cfg, "provider",
+                                            environment=environment or provider_environment(cfg))
                         return "admitted"
                     except GateError as exc:
                         return str(exc)
 
+        def other_case(attested, **overrides):
+            """Evidence whose `fresh_context` case carries the change, not `model_attestation`.
+
+            The REQ-LC-020 invariant answers for the attestation case first, so a row that
+            changed that case could not tell whether the per-case check still existed.
+            """
+            built = {case: {"passed": True, "measurement": (
+                attested if case == "model_attestation" else {"fixture": True})} for case in cases}
+            built["fresh_context"] |= overrides
+            return {"cases": built}
+
+        def swapped(path):
+            """A different file at a different path, so the recorded hash no longer matches."""
+            other = path.with_name("swapped.json")
+            other.write_text("{}")
+            return str(other)
+
         recorded = {"mode": "recorded-response-model"}
         header = {"mode": "provider-response-header"}
         substantiate = "retained evidence does not substantiate the claimed capability"
+        incomplete = "provider containment cases incomplete"
+        evidence_gone = "provider retained test evidence absent or changed"
+        now = datetime.now(timezone.utc)
         expectations = (
-            ("recorded mode, honest limits", check(recorded, recorded_run, honest), "admitted"),
+            # D10: the gate no longer reads the attestation label, so none of these refuse.
+            ("recorded mode, recorded run", check(recorded, recorded_run, honest), "admitted"),
             ("recorded mode, header run", check(recorded, header_run, honest), "admitted"),
-            ("recorded mode, echo flipped", check(recorded, recorded_run, honest | {"echo_tested": True}), substantiate),
-            ("recorded mode, tier withdrawn", check(recorded, recorded_run | {"recorded_tier_withdrawn": True}, honest),
+            ("header mode, recorded run", check(header, recorded_run), "admitted"),
+            ("header mode, recorded-mode limits stated", check(header, header_run, honest), "admitted"),
+            ("recorded mode, echo flipped in the limits", check(recorded, recorded_run, honest | {"echo_tested": True}),
+             "admitted"),
+            ("recorded mode, limits overstate the proof",
+             check(recorded, recorded_run, honest | {"answering_model_proven": True}), "admitted"),
+            ("no attestation block at all", check(None, header_run), "admitted"),
+            # The one measured invariant that survived (REQ-LC-020).
+            ("recorded tier withdrawn", check(recorded, recorded_run | {"recorded_tier_withdrawn": True}, honest),
              substantiate),
-            ("recorded mode, proof overstated", check(recorded, recorded_run, honest | {"answering_model_proven": True}),
-             "recorded-model capability must state its limits"),
-            ("header mode, header run", check(header, header_run), "admitted"),
-            ("header mode, recorded run", check(header, recorded_run), substantiate),
-            ("header mode, one call without a header", check(header, header_run | {"provider_response_header_calls": 3}),
+            ("recorded tier withdrawal absent", check(recorded, {k: v for k, v in recorded_run.items()
+                                                                if k != "recorded_tier_withdrawn"}, honest),
              substantiate),
-            ("header mode, a recorded call counted", check(header, header_run | {"recorded_response_model_calls": 1}),
+            ("no evidenced positive call", check(recorded, recorded_run | {"evidenced_positive_calls": 0}, honest),
              substantiate),
-            ("header mode, no evidenced call", check(header, header_run | {"evidenced_positive_calls": 0,
-                                                                           "provider_response_header_calls": 0}),
-             substantiate),
-            ("header mode, tier withdrawn", check(header, header_run | {"recorded_tier_withdrawn": True}), substantiate),
-            ("no attestation", check(None, header_run), "provider capability names no admitted attestation mode"),
-            ("header mode, recorded-mode limits stated", check(header, header_run, honest),
-             "header-mode capability must not state recorded-mode limits"),
-            # Each binding between the evidence and the proof, changed alone against evidence the
-            # attestation check admits, so no other guard can answer for it.
-            ("evidence from an older run", check(header, header_run,
-                                                 evidence_changes={"checked_at": "2000-01-01T00:00:00+00:00"}),
-             substantiate),
-            ("evidence from another executable", check(header, header_run,
-                                                       evidence_changes={"executable_sha256": "0" * 64}),
-             substantiate),
-            ("evidence for another configuration", check(recorded, recorded_run, honest,
-                                                         evidence_changes={"configuration_hash": "c" * 64}),
-             substantiate),
+            ("evidenced positive calls not an integer",
+             check(recorded, recorded_run | {"evidenced_positive_calls": True}, honest), substantiate),
+            # Host admission and the data-only provider shape.
+            ("not pinned by the host", check(recorded, recorded_run, honest, host_pin=False),
+             "capability is not pinned by the trusted host admission registry"),
+            ("another output kind", check(recorded, recorded_run, honest, config_changes={"output": "codex-agent"}),
+             "provider is not an admitted data-only worker"),
+            ("another filesystem scope", check(recorded, recorded_run, honest,
+                                               config_changes={"filesystem_scope": "project"}),
+             "provider is not an admitted data-only worker"),
+            ("another loader policy", check(recorded, recorded_run, honest,
+                                            config_changes={"loader_policy": "default"}),
+             "provider is not an admitted data-only worker"),
+            # Freshness and the bindings to this exact configuration and environment.
+            ("another environment", check(recorded, recorded_run, honest, environment={"PATH": "elsewhere"}),
+             "provider auth-home/runtime environment changed after host review"),
             ("proof for another configuration", check(recorded, recorded_run, honest,
                                                       proof_changes={"configuration_hash": "c" * 64}),
              "provider configuration has no matching containment proof"),
+            ("no check time", check(recorded, recorded_run, honest, proof_changes={"checked_at": None}),
+             "provider containment proof expired or absent"),
+            ("check time without a zone", check(recorded, recorded_run, honest,
+                                                proof_changes={"checked_at": datetime.now().isoformat()}),
+             "provider containment proof expired or absent"),
+            ("check time in the future", check(recorded, recorded_run, honest,
+                                               proof_changes={"checked_at": (now + timedelta(days=1)).isoformat()}),
+             "provider containment proof expired or absent"),
+            ("check time past the 30-day expiry",
+             check(recorded, recorded_run, honest,
+                   proof_changes={"checked_at": (now - timedelta(days=31)).isoformat()}),
+             "provider containment proof expired or absent"),
+            # The required cases and their per-case flags.
+            ("a required case missing", check(recorded, recorded_run, honest, proof_changes={"cases": {}}),
+             incomplete),
+            ("case not passed", check(recorded, recorded_run, honest, case_changes={"passed": False}), incomplete),
+            ("case passed by a truthy value", check(recorded, recorded_run, honest, case_changes={"passed": 1}),
+             incomplete),
+            ("observed differs from expected", check(recorded, recorded_run, honest,
+                                                     case_changes={"observed": False}), incomplete),
+            ("case names no evidence", check(recorded, recorded_run, honest, case_changes={"evidence_sha256": ""}),
+             incomplete),
+            ("unsupported proof schema", check(recorded, recorded_run, honest, proof_changes={"schema_version": 2}),
+             "unsupported capability evidence schema"),
+            # The retained evidence file itself.
+            ("evidence path not listed", check(recorded, recorded_run, honest, proof_changes={"evidence_files": {}}),
+             evidence_gone),
+            ("evidence path relative", check(recorded, recorded_run, honest,
+                                             evidence_files=lambda path: path.name), evidence_gone),
+            ("evidence file swapped for one with other bytes",
+             check(recorded, recorded_run, honest, evidence_files=swapped), evidence_gone),
+            # What the evidence file must itself say.
+            ("evidence of another schema", check(recorded, recorded_run, honest,
+                                                 evidence_changes={"schema_version": 2}), substantiate),
+            ("evidence of another purpose", check(recorded, recorded_run, honest,
+                                                  evidence_changes={"purpose": "verification"}), substantiate),
+            ("evidence for another configuration", check(recorded, recorded_run, honest,
+                                                         evidence_changes={"configuration_hash": "c" * 64}),
+             substantiate),
+            ("evidence from an older run", check(recorded, recorded_run, honest,
+                                                 evidence_changes={"checked_at": "2000-01-01T00:00:00+00:00"}),
+             substantiate),
+            ("evidence from another executable", check(recorded, recorded_run, honest,
+                                                       evidence_changes={"executable_sha256": "0" * 64}),
+             substantiate),
+            ("evidence from another harness", check(recorded, recorded_run, honest,
+                                                    evidence_changes={"probe_harness_sha256": "other"}),
+             substantiate),
+            ("no harness identity on either side",
+             check(recorded, recorded_run, honest, evidence_changes={"probe_harness_sha256": ""},
+                   proof_changes={"probe_harness_sha256": ""}), substantiate),
+            ("evidence naming other runtime files", check(recorded, recorded_run, honest,
+                                                          evidence_changes={"runtime_files": {"a": "b"}}),
+             substantiate),
+            ("evidence case not passed", check(recorded, recorded_run, honest,
+                                               evidence_changes=other_case(recorded_run, passed=False)),
+             substantiate),
+            ("evidence case with an empty measurement",
+             check(recorded, recorded_run, honest, evidence_changes=other_case(recorded_run, measurement={})),
+             substantiate),
+            ("evidence case measurement not a mapping",
+             check(recorded, recorded_run, honest, evidence_changes=other_case(recorded_run, measurement=[1])),
+             substantiate),
+            # The executable and what may sit beside it.
+            # The evidence names the same executable as the proof, so the binding holds and the
+            # file on disk is what fails: without moving both, an earlier binding answers first.
+            ("executable changed after proof", check(recorded, recorded_run, honest,
+                                                     proof_changes={"executable_sha256": "0" * 64},
+                                                     evidence_changes={"executable_sha256": "0" * 64}),
+             "provider executable changed after proof"),
+            ("executable named by a relative path", check(recorded, recorded_run, honest,
+                                                          argv=[Path(sys.executable).name]),
+             "provider executable changed after proof"),
+            ("provider carrying a runtime file", check(recorded, recorded_run, honest,
+                                                       proof_changes={"runtime_files": {"a": "b"}},
+                                                       evidence_changes={"runtime_files": {"a": "b"}}),
+             "data-only provider must be one reviewed native executable"),
+            ("argv naming a script the proof does not carry",
+             check(recorded, recorded_run, honest, argv=[sys.executable, "helper.py"]),
+             "provider script or binary missing from proof"),
         )
         for label, actual, expected in expectations:
             with self.subTest(label):

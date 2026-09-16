@@ -139,7 +139,7 @@ class WorkflowE2E(unittest.TestCase):
                         verifier_factory=lambda run: Verifier(),
                         admission_check=lambda run, stage: {"synthetic_fixture": True})
         run = start(self.store, self.project, "Build two slices", self.config,
-                    catalog(), "codex", spec_vendor="claude")
+                    catalog(), "codex", spec_vendor="claude", accept_catalog=True)
         result = engine.run(run["id"], max_steps=30)
         self.assertEqual(result["status"], "completed", result.get("last_error"))
         self.assertEqual(result["done_tickets"], ["T-1", "T-2"])
@@ -186,7 +186,7 @@ class WorkflowE2E(unittest.TestCase):
         engine = Engine(self.store, provider_factory=scenario.provider,
                         verifier_factory=lambda run: Verifier(),
                         admission_check=lambda run, stage: {"synthetic_fixture": True})
-        run = start(self.store, self.project, "Build two slices", self.config, catalog(), "codex")
+        run = start(self.store, self.project, "Build two slices", self.config, catalog(), "codex", accept_catalog=True)
         engine.run(run["id"], max_steps=3)
         ticket = self.store.root / run["id"] / "tickets" / "T-1.md"
         ticket.write_text(ticket.read_text(encoding="utf-8") + "\nchanged", encoding="utf-8")
@@ -203,7 +203,7 @@ class WorkflowE2E(unittest.TestCase):
         config = copy.deepcopy(self.config)
         config["input_artifacts"] = {"spec": spec()}
         run = start(self.store, self.project, "Plan two slices", config, catalog(), "codex",
-                    standalone="to-tickets")
+                    standalone="to-tickets", accept_catalog=True)
         result = engine.run(run["id"], max_steps=5)
         self.assertEqual(result["status"], "completed")
         self.assertEqual([call["stage"] for call in scenario.calls], ["to-tickets"])

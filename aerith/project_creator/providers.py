@@ -18,14 +18,17 @@ from .provenance import parse_codex_data_only
 _HOST_CAPABILITIES = {}
 _VALIDATED_RUNTIME_LOCK = threading.RLock()
 _ADMITTED_PROVIDER_OUTPUTS = {"codex-data-only"}
-# The evidence tiers each data-only attestation mode admits. `recorded-response-model`
-# claims only that the response recorded the requested model; header evidence is
-# stronger and meets that claim too. The header mode never admits recorded evidence.
+# The evidence tiers each data-only attestation mode accepts AT RUNTIME. Since D10
+# (2026-09-16) the mode is the operator's floor for what a single call may rest on, never
+# a claim about what was proven: `recorded-response-model` accepts a response that only
+# records the requested model, and header evidence is stronger and meets that floor too,
+# while the header mode never accepts recorded evidence. Nothing certifies this label
+# against the proof any more (REQ-LC-020); `attestation_facts` shows the operator what the
+# proof actually measured (REQ-LC-022).
 _ADMITTED_EVIDENCE = {
     "provider-response-header": {"provider_response_header"},
     "recorded-response-model": {"provider_response_header", "recorded_response_model"},
 }
-_RECORDED_MODE = "recorded-response-model"
 
 
 def _attestation_mode(config: dict):
@@ -37,31 +40,19 @@ def _attestation_mode(config: dict):
     return None
 
 
-def _recorded_mode_limits(proof: dict) -> dict:
-    """The limits a recorded-model capability must state, exactly and truthfully typed."""
-    limits = proof.get("limits")
-    if (not isinstance(limits, dict) or set(limits) != {"answering_model_proven", "echo_tested"}
-            or limits["answering_model_proven"] is not False
-            or not isinstance(limits["echo_tested"], bool)):
-        raise GateError("recorded-model capability must state its limits")
-    return limits
+def _model_attestation_measured(measurement: dict) -> bool:
+    """The one measured invariant left in the model-attestation case (REQ-LC-020, D10).
 
-
-def _attestation_substantiated(mode: str, measurement: dict, limits) -> bool:
-    """Whether the measured model attestation supports the record's mode.
-
-    No mode admits evidence that withdrew the recorded tier. The recorded mode's stated
-    limits must be the measured ones. The header mode needs every evidenced positive call
-    to have used header evidence, so it can never be relabelled onto recorded evidence.
+    No observation on this backend proves which model generated the output (D4), so a gate
+    that checked the record's attestation mode and limits was checking a label rather than
+    a fact, and two review rounds were spent on it. What survives is measured, not claimed:
+    the recorded tier was not withdrawn, and at least one positive call carried model
+    evidence at all. Which tier a call may rest on is the operator's runtime floor in
+    `invoke`; what the proof measured is reported by `attestation_facts`.
     """
-    if measurement.get("recorded_tier_withdrawn") is not False:
-        return False
-    if mode == _RECORDED_MODE:
-        return measurement.get("unserved_echo_observable") is limits["echo_tested"]
     calls = measurement.get("evidenced_positive_calls")
-    return (type(calls) is int and calls > 0
-            and measurement.get("provider_response_header_calls") == calls
-            and measurement.get("recorded_response_model_calls") == 0)
+    return (measurement.get("recorded_tier_withdrawn") is False
+            and type(calls) is int and calls > 0)
 
 
 def configure_host_capabilities(approved):
@@ -150,14 +141,11 @@ def validate_capability(config: dict, purpose: str, *, environment=None):
                                   or config.get("loader_policy") != "pe-dependent-load-system32"):
         raise GateError("provider is not an admitted data-only worker")
     proof = config.get("proof", {})
-    mode = _attestation_mode(config) if purpose == "provider" else None
-    if purpose == "provider" and mode is None:
-        raise GateError("provider capability names no admitted attestation mode")
-    recorded_limits = _recorded_mode_limits(proof) if mode == _RECORDED_MODE else None
-    if mode is not None and mode != _RECORDED_MODE and "limits" in proof:
-        # Only the recorded mode's limits are checked, so no other mode may carry a block that
-        # would read as verified.
-        raise GateError("header-mode capability must not state recorded-mode limits")
+    # D10 (2026-09-16): this gate no longer reads `attestation` or `proof.limits`. It
+    # answers one question, whether this is the reviewed executable with intact evidence
+    # that has not expired. The evidence tier a call may rest on is the operator's runtime
+    # floor, enforced per call in `invoke`, and what the proof measured about the model is
+    # reported to the operator by `attestation_facts` rather than certified here.
     if purpose == "provider" and proof.get("environment_hash") != digest(provider_environment(config) if environment is None else environment):
         raise GateError("provider auth-home/runtime environment changed after host review")
     expected = digest({k: v for k, v in config.items() if k != "proof"})
@@ -206,8 +194,8 @@ def validate_capability(config: dict, purpose: str, *, environment=None):
                      and measured_at == proof.get("checked_at")
                      and measured.get("executable_sha256") == proof.get("executable_sha256")
                      and measured.get("runtime_files") == proof.get("runtime_files", {}))
-            if valid and mode is not None and case == "model_attestation":
-                valid = _attestation_substantiated(mode, measured_case["measurement"], recorded_limits)
+            if valid and purpose == "provider" and case == "model_attestation":
+                valid = _model_attestation_measured(measured_case["measurement"])
         except ValueError:
             valid = False
         if not valid:
@@ -240,6 +228,66 @@ def validate_capability(config: dict, purpose: str, *, environment=None):
             raise GateError(f"{purpose} runtime dependency changed after proof")
         runtime_bytes[name] = raw
     return runtime_bytes
+
+
+def attestation_facts(config: dict, *, at=None) -> dict:
+    """What a provider proof MEASURED about the model, for the operator to read first.
+
+    REQ-LC-022 (D10). Every field here is read from the retained evidence file, never from
+    the record's own `attestation` or `limits` block: since REQ-LC-020 nothing checks those
+    fields, so a display that read them would present an unchecked claim as a fact, which is
+    the failure this function exists to prevent. `answering_model_proven` is False by
+    construction, not by measurement, because no observation on this backend can establish
+    it (D4).
+
+    Never raises. A summary that refuses to print is a summary the operator does not read,
+    and every fact here is enforced for real by `validate_capability` before the first call.
+    """
+    at = at or datetime.now(timezone.utc)
+    facts = {"available": False, "answering_model_proven": False, "evidence_floor": _attestation_mode(config),
+             "statement": "The model that generated the output is not proven on this backend; "
+                          "the worker requests the declared model and the response records it.",
+             "reason": None, "warnings": []}
+    proof = config.get("proof", {})
+    try:
+        value = proof["cases"]["model_attestation"]["evidence_sha256"]
+        raw = Path(proof["evidence_files"][value]).read_bytes()
+        if digest(raw) != value:
+            facts["reason"] = "retained evidence does not match its recorded hash"
+            return facts
+        measurement = json.loads(raw)["cases"]["model_attestation"]["measurement"]
+        if not isinstance(measurement, dict):
+            raise ValueError()
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        facts["reason"] = "retained evidence unreadable: " + type(exc).__name__
+        return facts
+    for key in ("evidenced_positive_calls", "provider_response_header_calls",
+                "recorded_response_model_calls", "recorded_tier_withdrawn", "unserved_echo_observable"):
+        facts[key] = measurement.get(key)
+    try:
+        checked = datetime.fromisoformat(proof["checked_at"])
+        age = at - checked
+        facts["proof_checked_at"] = proof["checked_at"]
+        facts["proof_age_days"] = round(age.total_seconds() / 86400, 2)
+        facts["proof_expires_in_days"] = round((timedelta(days=30) - age).total_seconds() / 86400, 2)
+        if facts["proof_expires_in_days"] <= 0:
+            facts["warnings"].append("the proof has passed its 30-day expiry and admission will refuse it")
+        elif facts["proof_expires_in_days"] <= 3:
+            facts["warnings"].append("the proof expires within three days; a fresh live run is due")
+    except (KeyError, TypeError, ValueError):
+        facts["warnings"].append("the proof states no readable check time")
+    accepted = _ADMITTED_EVIDENCE.get(facts["evidence_floor"], set())
+    if (facts["evidence_floor"] and "recorded_response_model" not in accepted
+            and not facts.get("provider_response_header_calls") and facts.get("recorded_response_model_calls")):
+        # Fails closed at the first call rather than at admission, so say so before the call
+        # is spent: the 5-call live budget is the reason this is a warning and not a surprise.
+        facts["warnings"].append("this floor accepts only header evidence, but the proof measured "
+                                 "recorded-tier evidence only, so live calls are expected to be refused")
+    if facts.get("unserved_echo_observable") is not True:
+        facts["warnings"].append("the unserved-model echo was not observable in the proof, so that "
+                                 "behaviour is stated as untested (D8)")
+    facts["available"] = True
+    return facts
 
 
 def _verified_docker_class(runtime_bytes):
@@ -371,9 +419,11 @@ class CLIProvider:
                 raise ValueError()
         except (ValueError, KeyError, TypeError) as exc:
             raise GateError("provider did not return the required JSON object") from exc
-        # The header mode admits only header evidence. Recorded evidence does not name the
-        # answering model, so it is admitted only under its own mode (operator ruling D6,
-        # 2026-09-15), and its audit never calls the model attested.
+        # The mode is the operator's evidence floor for a single call, enforced here and no
+        # longer certified at admission (D10, 2026-09-16). The header floor accepts only
+        # header evidence. Recorded evidence does not name the answering model, so a run
+        # resting on it must have declared the recorded floor, and its audit never calls the
+        # model attested.
         mode = _attestation_mode(self.config)
         if metadata.get("model_evidence") not in _ADMITTED_EVIDENCE[mode]:
             self.audit("provider_failure", {"vendor": self.name, "reason": "model_evidence_not_admitted",

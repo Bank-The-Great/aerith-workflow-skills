@@ -12,7 +12,7 @@ from .contracts import GateError, STAGES, digest
 from .engine import Engine, start
 from .mirror import GitHub, sync
 from .models import load_config, refresh_catalog
-from .providers import validate_capability
+from .providers import attestation_facts, validate_capability
 from .admission import verify_package
 from .processes import stable_directory
 from .store import Store, atomic_text, exclusive
@@ -32,6 +32,15 @@ def parser():
     new.add_argument("--objective", required=True)
     new.add_argument("--standalone", choices=STAGES)
     new.add_argument("--background", action="store_true")
+    # REQ-LC-021. Both tiers, because the first three stages run on the highest and the last
+    # three on the second-highest. `--accept-catalog-pins` is the operator saying the shown
+    # catalog proposal is their choice; it is never a default.
+    new.add_argument("--model-highest", help="model id for grill-with-docs, to-spec, to-tickets")
+    new.add_argument("--model-second", help="model id for implement, spec-review, defect-review")
+    new.add_argument("--spec-model-highest", help="as --model-highest, for a different --spec-vendor")
+    new.add_argument("--spec-model-second", help="as --model-second, for a different --spec-vendor")
+    new.add_argument("--accept-catalog-pins", action="store_true",
+                     help="accept the catalog's model proposal for every vendor this run uses")
     for command in ("status", "pause", "resume", "cancel", "answer", "review", "sync", "run"):
         cmd = sub.add_parser(command)
         cmd.add_argument("run_id")
@@ -57,7 +66,7 @@ def parser():
 
 def status(store, run):
     return {key: run.get(key) for key in ("id", "status", "stage", "branch", "worktree", "vendor", "spec_vendor", "questions", "last_error", "delivery_commit", "last_receipt", "mirror_status")} | {
-        "models": run["pins"],
+        "models": run["pins"], "model_declaration": run.get("model_declaration"),
         "mirror": [dict(x) for x in store.db.execute("SELECT key,issue,status,error FROM outbox WHERE run_id=?", (run["id"],))]}
 
 
@@ -83,6 +92,7 @@ def main(argv=None):
             return 0
         if args.command == "doctor":
             checks = {}
+            attestation = {}
             if args.config:
                 cfg = load_config(args.config)
                 checks["providers_configured"] = bool(cfg.get("providers"))
@@ -92,6 +102,9 @@ def main(argv=None):
                         checks[vendor] = "proof-current"
                     except (GateError, OSError, KeyError) as exc:
                         checks[vendor] = str(exc) if isinstance(exc, GateError) else "adapter unavailable"
+                    # REQ-LC-022: measured, and reported even when the gate refuses, because the
+                    # reason a proof is refused is usually in these numbers.
+                    attestation[vendor] = attestation_facts(adapter)
                 try:
                     validate_capability(cfg.get("verification_sandbox", {}), "verification")
                     checks["verification"] = "proof-current"
@@ -106,14 +119,34 @@ def main(argv=None):
                 store = Store(args.state, read_only=True)
                 checks["ledger"] = store.verify()
             passed = bool(args.config) and all(x is True or x == "proof-current" for x in checks.values())
-            print(json.dumps({"read_only": True, "status": "configured-gates-pass" if passed else "not-ready", "checks": checks, "model_calls": 0}, ensure_ascii=False))
+            print(json.dumps({"read_only": True, "status": "configured-gates-pass" if passed else "not-ready",
+                              "checks": checks, "provider_attestation": attestation, "model_calls": 0}, ensure_ascii=False))
             return 0 if passed else 2
         if not args.state:
             raise GateError("--state is required; choose a private per-project directory")
         store = Store(args.state, create=args.command == "start", read_only=args.command == "status")
         if args.command == "start":
-            result = start(store, args.project, args.objective, load_config(args.config), load_config(args.catalog), args.vendor,
-                           spec_vendor=args.spec_vendor, standalone=args.standalone)
+            run_config = load_config(args.config)
+            declaration = {}
+            if args.model_highest or args.model_second:
+                declaration[args.vendor] = {"highest": args.model_highest, "second-highest": args.model_second}
+            if args.spec_model_highest or args.spec_model_second:
+                if not args.spec_vendor or args.spec_vendor == args.vendor:
+                    raise GateError("--spec-model-* needs a --spec-vendor different from --vendor")
+                declaration[args.spec_vendor] = {"highest": args.spec_model_highest,
+                                                 "second-highest": args.spec_model_second}
+            result = start(store, args.project, args.objective, run_config, load_config(args.catalog), args.vendor,
+                           spec_vendor=args.spec_vendor, standalone=args.standalone,
+                           models=declaration or None, accept_catalog=args.accept_catalog_pins)
+            # REQ-LC-022: the provider's MEASURED attestation facts, printed before the first
+            # provider call is made, never read from the record's own attestation or limits.
+            print(json.dumps({"run_id": result["id"], "models": result["pins"],
+                              "model_declaration": result["model_declaration"],
+                              "provider_attestation": {
+                                  name: attestation_facts(adapter)
+                                  for name, adapter in run_config.get("providers", {}).items()
+                                  if name in result["model_declaration"]["vendors"]}},
+                             ensure_ascii=False, indent=2))
             if args.background:
                 background(args.state, result["id"])
             else:

@@ -200,3 +200,15 @@
   changes one evidence-to-proof field at a time against evidence the attestation check admits, each
   with a mutant. Forward rule: when a new guard sits in front of an existing test's target, give the
   test input the new guard admits, or the test stops testing its target.
+
+- 2026-09-16: Three review rounds in a row were spent certifying an attestation label that no
+  observation on this backend can substantiate. D10 removed the certification and left the label
+  as the operator's runtime evidence floor, moving the model choice to an explicit declaration at
+  start. Two mutants then survived because their rows drove the failure through the
+  `model_attestation` case, where the one surviving invariant answers first, so removing the
+  per-case `passed` and the non-empty measurement checks changed nothing observable; both rows now
+  drive it through a case that invariant does not touch. A third was equivalent by construction.
+  Forward rules: never ask a gate to certify a property the evidence cannot establish, because the
+  reviews will be spent on the label rather than the fact; and when a row for condition B must pass
+  through condition A, route it through an input A does not judge, or the row proves nothing about B.
+
