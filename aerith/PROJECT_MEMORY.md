@@ -59,6 +59,24 @@
 - A generated number is not a checked number. Make the generator assert its own
   partition before it prints: the categories must sum to the population, and the
   verdicts must sum to their denominator, or it refuses.
+- A denominator read out of a hand-maintained field is not a measurement. Every
+  number divided by it is then a claim about that file, not about the code. Re-derive
+  the population from the source the numbers are about, and refuse when the two
+  disagree. A one-word edit moved a condition out of the count and the check
+  re-derived green over the smaller one, with nothing to compare against.
+- A judgement whose scope lives only in prose is invisible to every count. A debt
+  names the path it is owed on, as a field the generator requires and prints, or the
+  criterion built on it reads zero while the thing it was built to catch is open.
+- A row proves a refusal FIRES. A mutant proves the condition is LOAD-BEARING. They
+  are two claims, one does not substitute for the other, and an entry that can support
+  only the first says so. A binding the ledger cannot verify is refused, not relabelled.
+- When a fixture cannot produce a shape, the limit is the fixture's until someone
+  checks. Two refusals were recorded as impossible to exercise for two rounds because
+  every row wrote its input through one helper, and writing the bytes directly reached
+  both on the first try.
+- A control that reads only a subprocess's stdout cannot tell CLEAN from UNANSWERED.
+  Measured: git exits 128 with empty stdout outside a repository, which is exactly what
+  a clean tree returns, and the campaign would have mutated files in place on it.
 - Filter a walk by the LINE it must stop at, not by the top-level statements that
   end before it. A block that encloses the stopping point is dropped whole, and
   everything inside it goes with it.
