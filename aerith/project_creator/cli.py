@@ -100,7 +100,7 @@ def announce_providers(run_config, **extra):
 
 
 def status(store, run):
-    return {key: run.get(key) for key in ("id", "status", "stage", "branch", "worktree", "vendor", "spec_vendor", "questions", "last_error", "delivery_commit", "last_receipt", "mirror_status")} | {
+    return {key: run.get(key) for key in ("id", "status", "stage", "branch", "worktree", "vendor", "spec_vendor", "questions", "last_error", "delivery_commit", "last_receipt", "mirror_status", "review_limitations", "review_refusal")} | {
         "models": run["pins"], "model_declaration": run.get("model_declaration"),
         "mirror": [dict(x) for x in store.db.execute("SELECT key,issue,status,error FROM outbox WHERE run_id=?", (run["id"],))]}
 

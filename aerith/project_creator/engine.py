@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 
 from .contracts import (GateError, STAGES, artifact, criteria, digest, parse_artifact,
-                        safe_relative, safe_text, ticket_order, validate_review)
+                        review_refusal, safe_relative, safe_text, ticket_order, validate_review)
 from .output_schemas import (assumption_questions, schema_for, validate_brief, validate_output,
                              validate_spec)
 from .models import accept_pin, catalog_pin, declare_pin, model_for
@@ -37,8 +37,8 @@ CONTRACTS = {
     "to-spec": {"spec": {"title": "...", "problem": "...", "solution": "...", "actors": [{"name": "a user named in the brief, or system", "description": "..."}], "non_goals": [], "decisions": [{"id": "SDEC-001", "kind": "interface", "decision": "...", "rationale": "...", "source": {"type": "brief", "ref": "DEC-001"}}], "test_seams": [{"seam": "...", "test_ids": ["approved-test-id"], "prior_art": []}], "testing_notes": [], "further_notes": [], "requirements": [{"id": "REQ-001", "actor": "...", "text": "...", "benefit": "...", "acceptance": [{"id": "AC-001", "text": "...", "test_ids": ["approved-test-id"]}]}]}, "questions": []},
     "to-tickets": {"tickets": [{"id": "T-001", "title": "...", "criteria": ["AC-001"], "blocked_by": [], "write_set": ["approved/path.py"]}], "questions": []},
     "implement": {"changes": [{"path": "approved/existing.py", "expected_sha256": "current UTF-8 file hash", "content": "complete replacement UTF-8 file"}], "summary": "...", "questions": []},
-    "spec-review": {"verdict": "pass", "checked_criteria": ["AC-001"], "findings": [], "limitations": []},
-    "defect-review": {"verdict": "pass", "checked_criteria": [], "findings": [], "limitations": []},
+    "spec-review": {"verdict": "pass", "checked_criteria": ["AC-001"], "findings": [], "limitations": [{"kind": "inherent", "text": "what this role can never do, for example execute code; it does not block"}]},
+    "defect-review": {"verdict": "pass", "checked_criteria": [], "findings": [], "limitations": [{"kind": "encountered", "text": "what stopped you checking something; it blocks, and return needs_context if it stopped the review"}]},
 }
 
 RESOURCE_FILES = {
@@ -466,8 +466,11 @@ class Engine:
         acs = criteria(self._validated_spec(run), set(run["config"]["tests"]))
         if run["standalone"] in {"spec-review", "defect-review"}:
             report = self.invoke(run, stage, self.packet(run, stage, code=code, scope=sorted(acs)))
-            passed = validate_review(report, set(acs), spec_axis=stage == "spec-review")
+            refusal = review_refusal(report, set(acs), spec_axis=stage == "spec-review")
+            passed = refusal is None
             run["review_result"] = report
+            run["review_limitations"] = {stage: report["limitations"]}
+            run["review_refusal"] = {stage: refusal} if refusal else {}
             run["status"] = "completed" if passed else "review_failed"
             self.checkpoint(run, "standalone_review")
             return run
@@ -549,7 +552,12 @@ class Engine:
             reports[axis] = self.invoke(run, axis, self.packet(run, axis, code=frozen, ticket=ticket,
                                                                tests=tests, scope=sorted(scope),
                                                                review_attempt=review_attempt))
-        passed = all(validate_review(reports[axis], scope, spec_axis=axis == "spec-review") for axis in reports)
+        refusals = {axis: review_refusal(reports[axis], scope, spec_axis=axis == "spec-review") for axis in reports}
+        passed = not any(refusals.values())
+        # The operator sees what each reviewer said it could not do, on the same surface as the
+        # delivery, instead of only inside a hash-named receipt (INVERTER F1, 2026-09-18).
+        run["review_limitations"] = {axis: reports[axis]["limitations"] for axis in reports}
+        run["review_refusal"] = {axis: reason for axis, reason in refusals.items() if reason}
         self.assert_frozen(run, root, frozen)
         receipt = {"source_hash": frozen["hash"], "artifacts": dict(run["artifacts"]),
                    "ticket_artifacts": dict(run["ticket_artifacts"]), "tests": tests,
@@ -559,7 +567,8 @@ class Engine:
         receipt_hash = digest(receipt)
         atomic_text(self.store.root / run_id / "receipts" / (receipt_hash + ".json"), json.dumps(receipt, ensure_ascii=False, indent=2))
         if not passed:
-            run["feedback"] = list(reports.values())
+            # The next attempt is told which clause refused it, not only what the reviewers wrote.
+            run["feedback"] = [{"controller_refusal": run["review_refusal"]}] + list(reports.values())
             run["verify_ticket"] = None
             run["active_review"] = None
             if not ticket:

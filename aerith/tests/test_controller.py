@@ -86,6 +86,18 @@ class FixtureProvider:
         return {"verdict": "pass", "checked_criteria": packet["criteria_in_scope"], "findings": [], "limitations": []}
 
 
+class LimitedProvider(FixtureProvider):
+    """A fixture reviewer that states limitations, as every honest reviewer does (REQ-PC-014)."""
+
+    def __init__(self, log, limitations):
+        super().__init__(log)
+        self.limitations = limitations
+
+    def invoke(self, stage, model, packet, directory):
+        result = super().invoke(stage, model, packet, directory)
+        return result | {"limitations": self.limitations} if stage.endswith("-review") else result
+
+
 class FixtureVerifier:
     def run(self, ids, root, *, expected_files=None):
         # Fixed trusted fixture test, not a sandbox claim or model-generated test.
@@ -321,6 +333,38 @@ class Harness(unittest.TestCase):
         self.assertEqual(committed, "def increment(x):\n    return x + 1\n")
         self.assertEqual([x[0] for x in self.log], ["grill-with-docs", "to-spec", "to-tickets", "implement", "spec-review", "defect-review", "spec-review", "defect-review"])
         self.assertTrue(self.store.verify())
+
+    def _engine_whose_reviewers_state(self, limitations):
+        return Engine(self.store, provider_factory=lambda run, vendor: LimitedProvider(self.log, limitations),
+                      verifier_factory=lambda run: FixtureVerifier(),
+                      admission_check=lambda run, stage: {"fixture_only": True})
+
+    def test_a_delivery_carries_what_each_reviewer_said_it_could_not_do(self):
+        # REQ-PC-014: an inherent limitation no longer refuses the work, and it does not vanish
+        # either: it reaches the run, the operator's own status output and the receipt.
+        stated = [{"kind": "inherent", "text": "this role cannot execute the tests it is shown"}]
+        run = self.create()
+        result = self._engine_whose_reviewers_state(stated).run(run["id"], max_steps=12)
+        self.assertEqual(result["status"], "completed", result.get("last_error"))
+        self.assertTrue(result["delivery_commit"])
+        self.assertEqual(result["review_limitations"], {"spec-review": stated, "defect-review": stated})
+        self.assertEqual(result["review_refusal"], {})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            main(["--state", str(self.store.root), "status", run["id"]])
+        self.assertEqual(json.loads(out.getvalue())["review_limitations"], result["review_limitations"])
+        receipt = json.loads((self.store.root / run["id"] / "receipts" / (result["last_receipt"] + ".json")).read_text(encoding="utf-8"))
+        self.assertEqual(receipt["reviews"]["defect-review"]["limitations"], stated)
+
+    def test_a_limitation_that_stopped_the_review_stops_delivery_and_names_the_clause(self):
+        stopped = [{"kind": "encountered", "text": "the packet lacks the file this criterion names"}]
+        run = self.create()
+        result = self._engine_whose_reviewers_state(stopped).run(run["id"], max_steps=4)
+        self.assertNotIn("delivery_commit", result)
+        self.assertEqual(result["status"], "ready")
+        self.assertIn("stopped it checking", json.dumps(result["review_refusal"]))
+        # The next attempt is told which clause refused it, not only what the reviewers wrote.
+        self.assertEqual(result["feedback"][0]["controller_refusal"], result["review_refusal"])
 
     def test_packets_use_frozen_reviewed_resources_without_disk_reopen(self):
         run = self.create()

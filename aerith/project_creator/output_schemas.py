@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import copy
 
-from .contracts import GateError
+from .contracts import GateError, LIMITATION_KINDS, PLACEHOLDERS, real
 
 
 def _array(items):
@@ -31,11 +31,18 @@ FINDING = _object({
     "criterion": {"anyOf": [STRING, {"type": "null"}]},
     "disposition": {"anyOf": [STRING, {"type": "null"}]},
 })
+# REQ-PC-014: a limitation says which kind it is, because "I cannot execute anything" is true of
+# every review this architecture can produce and must not block, while "something stopped me
+# checking" must.
+LIMITATION = _object({
+    "kind": {"type": "string", "enum": list(LIMITATION_KINDS)},
+    "text": STRING,
+})
 REVIEW = _object({
     "verdict": {"type": "string", "enum": ["pass", "fail", "needs_context"]},
     "checked_criteria": STRINGS,
     "findings": _array(FINDING),
-    "limitations": STRINGS,
+    "limitations": _array(LIMITATION),
 })
 
 NAMED = _object({"name": STRING, "description": STRING})
@@ -191,13 +198,8 @@ def _validate(value: object, schema: dict, path: str = "output") -> None:
 # contract example. These rules are the checks a machine can actually make; anything they
 # cannot judge stays with the operator and the reviewers (REQ-PC-013, INVERTER F1/F3).
 
-_PLACEHOLDERS = {"", "...", "…", "tbd", "todo", "n/a"}
-
-
-def _real(value: object, label: str) -> str:
-    if not isinstance(value, str) or value.strip().casefold().strip(". …") in {"", *_PLACEHOLDERS}:
-        raise GateError(f"{label} is empty or a placeholder")
-    return value
+_PLACEHOLDERS = PLACEHOLDERS
+_real = real  # one owner, in contracts.py, shared with the review contract (REQ-PC-014)
 
 
 def _norm(text: str) -> str:

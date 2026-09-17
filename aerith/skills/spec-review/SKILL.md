@@ -25,6 +25,11 @@ bundled smell baseline and evidence expectations.
 
 Return `verdict`, `checked_criteria`, `findings`, and `limitations`. Findings need
 stable ID, priority 0..3, location, evidence and impact. P3 also needs a disposition.
+Every limitation states its kind. `inherent` is what this role can never do, such as
+executing code or tests, or seeing anything outside the frozen packet; it does not block
+delivery. `encountered` is something that stopped you checking a criterion; it blocks, and
+if it stopped you reviewing at all, return `needs_context`. State every limitation you
+have: omitting one to make a review pass is a false report, not a courtesy.
 Never edit files, execute code, publish, commit, delegate recursively or approve
 the run. Do not claim a defect/security audit was performed: that is a separate
 review role, combined with this report by the Code Review dispatcher.

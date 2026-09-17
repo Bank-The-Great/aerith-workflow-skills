@@ -113,6 +113,14 @@
   is deleted, so every such mutant dies of bookkeeping and the campaign measures
   the instrument instead of the tests.
 
+- A review passes on its verdict, its findings and its coverage, never on silence. A rule that
+  refuses a report for stating what the role can never do is met only by a reviewer that hides
+  it (REQ-PC-014, measured in the D12 pilot).
+- A self-reported field can still be bounded: a reviewer may check less than its scope, never
+  claim more.
+- When a controller refuses model output, hand the reason back with the feedback. A retry that
+  is not told which clause refused it returns the same output and burns the attempt ceiling.
+
 ## Lesson Log
 
 - 2026-09-13: The first full-pipeline fixture failed because Git checked out CRLF

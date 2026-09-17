@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from project_creator.contracts import GateError
+from project_creator.contracts import GateError, review_refusal, validate_review
 from project_creator.engine import CONTRACTS
 from project_creator.output_schemas import (SCHEMAS, assumption_questions, validate_brief, validate_output,
                                             validate_spec)
@@ -162,6 +162,59 @@ class Contracts(unittest.TestCase):
         self.assertEqual(len(questions), 1)
         self.assertIn("SDEC-2", questions[0])
         self.assertEqual(assumption_questions(spec()), [])
+
+
+def review(**changes):
+    return {"verdict": "pass", "checked_criteria": ["AC-1"], "findings": [], "limitations": []} | changes
+
+
+class ReviewContract(unittest.TestCase):
+    """REQ-PC-014. What a review is admitted on, and what it may not claim."""
+
+    def test_an_inherent_limitation_does_not_refuse_an_otherwise_clean_review(self):
+        # The D12 pilot regression: both reviewers returned pass with zero findings and full
+        # coverage, and the delivery was refused because they had said what they cannot do.
+        stated = review(limitations=[{"kind": "inherent", "text": "this role cannot execute the tests it is shown"},
+                                     {"kind": "inherent", "text": "only the frozen packet was visible"}])
+        self.assertIsNone(review_refusal(stated, {"AC-1"}, spec_axis=True))
+        self.assertTrue(validate_review(stated, {"AC-1"}, spec_axis=True))
+
+    def test_an_encountered_limitation_refuses_and_says_so_without_raising(self):
+        stopped = review(limitations=[{"kind": "encountered", "text": "the packet lacks the file AC-1 names"}])
+        self.assertIn("stopped it checking", review_refusal(stopped, {"AC-1"}, spec_axis=True))
+        self.assertFalse(validate_review(stopped, {"AC-1"}, spec_axis=True))
+
+    def test_the_verdict_and_the_findings_still_decide(self):
+        for report, reason in ((review(verdict="needs_context"), "pass verdict"),
+                               (review(verdict="fail", findings=[{"id": "F-1", "priority": 3, "message": "style",
+                                                                  "disposition": "advisory"}]), "pass verdict"),
+                               (review(findings=[{"id": "F-1", "priority": 3, "message": "style", "disposition": "advisory"},
+                                                 {"id": "F-2", "priority": 2, "message": "wrong row"}]), "above P3")):
+            self.assertIn(reason, review_refusal(report, {"AC-1"}, spec_axis=True))
+        clean = review(findings=[{"id": "F-1", "priority": 3, "message": "style", "disposition": "advisory"}])
+        self.assertIsNone(review_refusal(clean, {"AC-1"}, spec_axis=True))
+        with self.assertRaises(GateError):
+            review_refusal(review(findings=[{"id": "F-1", "priority": 3, "message": "style"}]), {"AC-1"}, spec_axis=True)
+
+    def test_a_limitation_must_say_its_kind_and_say_something(self):
+        for bad in ("", "   ", "...", "tbd", "TODO"):
+            with self.assertRaises(GateError):
+                review_refusal(review(limitations=[{"kind": "inherent", "text": bad}]), {"AC-1"}, spec_axis=True)
+        for kind in ("", "advisory", None):
+            with self.assertRaises(GateError):
+                review_refusal(review(limitations=[{"kind": kind, "text": "real text"}]), {"AC-1"}, spec_axis=True)
+        with self.assertRaises(GateError):
+            review_refusal(review(limitations=["a bare string"]), {"AC-1"}, spec_axis=True)
+
+    def test_no_axis_may_claim_criteria_it_was_not_given(self):
+        # The spec axis must cover its scope exactly; the defect axis may cover less, never more.
+        with self.assertRaises(GateError):
+            review_refusal(review(checked_criteria=[]), {"AC-1"}, spec_axis=True)
+        with self.assertRaises(GateError):
+            review_refusal(review(checked_criteria=["AC-1", "AC-2"]), {"AC-1"}, spec_axis=True)
+        with self.assertRaises(GateError):
+            review_refusal(review(checked_criteria=["AC-1", "AC-9"]), {"AC-1"}, spec_axis=False)
+        self.assertIsNone(review_refusal(review(checked_criteria=[]), {"AC-1"}, spec_axis=False))
 
 
 if __name__ == "__main__":

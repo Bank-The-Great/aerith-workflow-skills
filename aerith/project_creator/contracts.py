@@ -12,6 +12,10 @@ PROTECTED = {".git", ".aerith", ".claude", ".codex", ".gemini", ".agents", ".git
 SECRET_NAME = re.compile(r"(^\.env($|\.)|secret|credential|^auth\.json$|^id_(rsa|ed25519)|\.(pem|p12|pfx|key)$)", re.I)
 SECRET_TEXT = re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|(?:ghp_|github_pat_|sk-proj-|sk-ant-api)[A-Za-z0-9_-]{16,}|Bearer\s+[A-Za-z0-9._-]{24,}")
 MAX_BYTES = 2_000_000
+LIMITATION_KINDS = ("inherent", "encountered")
+# One owner for "the worker wrote nothing here": the schema layer imports this rather than
+# keeping a second copy, because two placeholder sets drift (REQ-PC-014).
+PLACEHOLDERS = {"", "...", "…", "tbd", "todo", "n/a"}
 
 
 class GateError(Exception):
@@ -29,6 +33,13 @@ def digest(value: bytes | str | dict | list) -> str:
 def nonempty(value, label):
     if not isinstance(value, str) or not value.strip():
         raise GateError(f"missing {label}")
+    return value
+
+
+def real(value, label):
+    """Text a worker actually wrote, not a placeholder copied from the contract example."""
+    if not isinstance(value, str) or value.strip().casefold().strip(". …") in PLACEHOLDERS:
+        raise GateError(f"{label} is empty or a placeholder")
     return value
 
 
@@ -160,19 +171,36 @@ def ticket_order(tickets: list[dict], acs: dict, allowed: list[str]) -> list[str
     return ordered
 
 
-def validate_review(report: dict, expected: set[str], *, spec_axis: bool) -> bool:
+def review_refusal(report: dict, expected: set[str], *, spec_axis: bool) -> str | None:
+    """Why this review cannot admit the work, or None when it can.
+
+    REQ-PC-014. Until 2026-09-18 a review was admitted only when `limitations` was EMPTY. A
+    data-only reviewer can never execute anything, so that sentence is true of every honest report:
+    the rule refused truthful reviews and rewarded a reviewer that stayed silent. Measured in the
+    D12 pilot, where both reviewers returned pass with zero findings and full coverage and the
+    delivery was refused anyway. A limitation now declares its kind. `inherent` is what this role
+    can never do and never blocks; `encountered` stopped the reviewer checking something and blocks
+    like a finding. The reason is returned rather than swallowed, so a refused attempt can be told
+    which clause refused it (INVERTER F9, 2026-09-18).
+    """
     if not isinstance(report, dict):
         raise GateError("review must be an object")
     if report.get("verdict") not in {"pass", "fail", "needs_context"}:
         raise GateError("invalid review verdict")
     findings = report.get("findings")
-    if not isinstance(findings, list) or not isinstance(report.get("limitations"), list):
+    limitations = report.get("limitations")
+    if not isinstance(findings, list) or not isinstance(limitations, list):
         raise GateError("incomplete review report")
     checked = report.get("checked_criteria", [])
     if not isinstance(checked, list) or not all(isinstance(x, str) for x in checked):
         raise GateError("invalid reviewed criterion list")
     if spec_axis and set(checked) != expected:
         raise GateError("review did not cover every criterion")
+    # The defect axis may check less than the scope, but no axis may CLAIM more than it was given.
+    # `checked_criteria` is self-reported, and an unbounded claim is the part of it a machine can
+    # refuse; before this the defect axis was unconstrained in both directions (INVERTER F4).
+    if not spec_axis and not set(checked) <= expected:
+        raise GateError("review claims criteria outside its scope")
     for finding in findings:
         if not isinstance(finding, dict):
             raise GateError("finding must be an object")
@@ -182,4 +210,20 @@ def validate_review(report: dict, expected: set[str], *, spec_axis: bool) -> boo
         nonempty(finding.get("id"), "finding id")
         if finding["priority"] == 3:
             nonempty(finding.get("disposition"), "P3 disposition")
-    return report["verdict"] == "pass" and not report["limitations"] and all(f["priority"] == 3 for f in findings)
+    for limitation in limitations:
+        if not isinstance(limitation, dict):
+            raise GateError("limitation must be an object")
+        if limitation.get("kind") not in LIMITATION_KINDS:
+            raise GateError("limitation kind must be inherent or encountered")
+        real(limitation.get("text"), "limitation text")
+    if report["verdict"] != "pass":
+        return "the reviewer did not return a pass verdict"
+    if any(finding["priority"] != 3 for finding in findings):
+        return "the review reports findings above P3"
+    if any(limitation["kind"] == "encountered" for limitation in limitations):
+        return "the review reports a limitation that stopped it checking"
+    return None
+
+
+def validate_review(report: dict, expected: set[str], *, spec_axis: bool) -> bool:
+    return review_refusal(report, expected, spec_axis=spec_axis) is None
