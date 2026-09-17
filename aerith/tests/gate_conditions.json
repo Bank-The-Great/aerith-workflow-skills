@@ -1,1490 +1,1490 @@
 {
-  "scope": {
-    "project_creator/providers.py": [
-      "validate_capability",
-      "_launch_refusal",
-      "_attestation_mode",
-      "_model_attestation_measured"
-    ],
-    "project_creator/processes.py": [
-      "_reviewed_locks",
-      "_locked_windows_reviewed_path"
-    ]
-  },
-  "row_sources": {
-    "edges": "tests/test_edges.py",
-    "lock": "tests/test_controller.py"
-  },
-  "launch_exempt": {
-    "model in arg": "reads the model chosen for this call, not the record; the gate never sees a model",
-    "any(inference_cwd.iterdir())": "reads the temporary inference directory this call just created, not the record; the gate has no such directory. Round 25's mirror could not see this one at all because it sits inside the block that encloses the launch (R25-SEC-01, R25-SPEC-06)"
-  },
-  "launch_precondition_count": 4,
-  "conditions": [
-    {
-      "id": "validate_capability | capability is not pinned by the trusted host admission registry | _HOST_CAPABILITIES.get(digest(config)) != purpose",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "_HOST_CAPABILITIES.get(digest(config)) != purpose",
-      "message": "capability is not pinned by the trusted host admission registry",
-      "disposition": "covered",
-      "rows": [
-        "edges:not pinned by the host"
-      ],
-      "mutants": [
-        "host_pin_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | provider is not an admitted data-only worker | purpose == 'provider'",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "purpose == 'provider'",
-      "message": "provider is not an admitted data-only worker",
-      "disposition": "covered",
-      "rows": [
-        "edges:another output kind",
-        "edges:another filesystem scope",
-        "edges:another loader policy"
-      ],
-      "mutants": [
-        "provider_shape_unchecked"
-      ],
-      "reason": "also the purpose scope: the data-only worker check does not apply to the verification purpose"
-    },
-    {
-      "id": "validate_capability | provider is not an admitted data-only worker | config.get('output') not in _ADMITTED_PROVIDER_OUTPUTS",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "config.get('output') not in _ADMITTED_PROVIDER_OUTPUTS",
-      "message": "provider is not an admitted data-only worker",
-      "disposition": "covered",
-      "rows": [
-        "edges:another output kind"
-      ],
-      "mutants": [
-        "provider_output_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | provider is not an admitted data-only worker | config.get('filesystem_scope') != 'codex-home-auth-only'",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "config.get('filesystem_scope') != 'codex-home-auth-only'",
-      "message": "provider is not an admitted data-only worker",
-      "disposition": "covered",
-      "rows": [
-        "edges:another filesystem scope"
-      ],
-      "mutants": [
-        "provider_scope_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | provider is not an admitted data-only worker | config.get('loader_policy') != 'pe-dependent-load-system32'",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "config.get('loader_policy') != 'pe-dependent-load-system32'",
-      "message": "provider is not an admitted data-only worker",
-      "disposition": "covered",
-      "rows": [
-        "edges:another loader policy"
-      ],
-      "mutants": [
-        "provider_loader_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | guards refusal = _launch_refusal(config, name) | purpose == 'provider'",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "expression",
-      "text": "purpose == 'provider'",
-      "message": "guards refusal = _launch_refusal(config, name)",
-      "disposition": "structural",
-      "rows": [],
-      "mutants": [],
-      "reason": "purpose scope: only a provider record is launched"
-    },
-    {
-      "id": "validate_capability | via refusal | _launch_refusal(config, name)",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "expression",
-      "text": "_launch_refusal(config, name)",
-      "message": "via refusal",
-      "disposition": "covered",
-      "rows": [
-        "edges:filed under another vendor key",
-        "edges:no vendor key named"
-      ],
-      "mutants": [
-        "gate_ignores_the_vendor_name"
-      ],
-      "reason": "delegation to the owner `invoke` also calls; its own conditions are inventoried in _launch_refusal"
-    },
-    {
-      "id": "validate_capability | via refusal | refusal",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "expression",
-      "text": "refusal",
-      "message": "via refusal",
-      "disposition": "structural",
-      "rows": [],
-      "mutants": [],
-      "reason": "relay of the owner's answer, which is inventoried where it is decided"
-    },
-    {
-      "id": "validate_capability | provider auth-home/runtime environment changed after host review | purpose == 'provider'",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "purpose == 'provider'",
-      "message": "provider auth-home/runtime environment changed after host review",
-      "disposition": "structural",
-      "rows": [],
-      "mutants": [],
-      "reason": "purpose scope: the environment binding is a provider-only refusal"
-    },
-    {
-      "id": "validate_capability | provider auth-home/runtime environment changed after host review | proof.get('environment_hash') != digest(provider_environment(config) if environment is None else environment)",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "proof.get('environment_hash') != digest(provider_environment(config) if environment is None else environment)",
-      "message": "provider auth-home/runtime environment changed after host review",
-      "disposition": "covered",
-      "rows": [
-        "edges:another environment"
-      ],
-      "mutants": [
-        "environment_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | selects expected | k != 'proof'",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "expression",
-      "text": "k != 'proof'",
-      "message": "selects expected",
-      "disposition": "structural",
-      "rows": [],
-      "mutants": [],
-      "reason": "selection: the proof is excluded from the hash it is compared against"
-    },
-    {
-      "id": "validate_capability | {purpose} configuration has no matching containment proof | proof.get('configuration_hash') != expected",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "proof.get('configuration_hash') != expected",
-      "message": "{purpose} configuration has no matching containment proof",
-      "disposition": "covered",
-      "rows": [
-        "edges:proof for another configuration"
-      ],
-      "mutants": [
-        "configuration_hash_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | {purpose} containment proof expired or absent | try checked = datetime.fromisoformat(proof['checked_at'])",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "implicit",
-      "text": "try checked = datetime.fromisoformat(proof['checked_at'])",
-      "message": "{purpose} containment proof expired or absent",
-      "disposition": "implicit",
-      "rows": [
-        "edges:no check time"
-      ],
-      "mutants": [],
-      "reason": "an absent, non-string or unparseable check time raises into the handler that refuses; no mutant can delete an exception, so the row is the whole evidence"
-    },
-    {
-      "id": "validate_capability | {purpose} containment proof expired or absent | checked.tzinfo is None",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "checked.tzinfo is None",
-      "message": "{purpose} containment proof expired or absent",
-      "disposition": "witnessed",
-      "rows": [
-        "edges:check time without a zone"
-      ],
-      "mutants": [
-        "expiry_naive_time_allowed"
-      ],
-      "reason": "subtracting a naive time raises TypeError into the same handler with the same message, so no input isolates this disjunct; the surviving mutant is the witness"
-    },
-    {
-      "id": "validate_capability | {purpose} containment proof expired or absent | age < timedelta(0)",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "age < timedelta(0)",
-      "message": "{purpose} containment proof expired or absent",
-      "disposition": "covered",
-      "rows": [
-        "edges:check time in the future"
-      ],
-      "mutants": [
-        "expiry_future_time_allowed"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | {purpose} containment proof expired or absent | age > _PROOF_LIFETIME",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "age > _PROOF_LIFETIME",
-      "message": "{purpose} containment proof expired or absent",
-      "disposition": "covered",
-      "rows": [
-        "edges:check time past the 30-day expiry"
-      ],
-      "mutants": [
-        "expiry_window_unbounded"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | selects required | purpose == 'verification'",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "expression",
-      "text": "purpose == 'verification'",
-      "message": "selects required",
-      "disposition": "structural",
-      "rows": [],
-      "mutants": [],
-      "reason": "selection: which containment cases the purpose requires"
-    },
-    {
-      "id": "validate_capability | {purpose} containment cases incomplete | isinstance(cases.get(key), dict)",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "isinstance(cases.get(key), dict)",
-      "message": "{purpose} containment cases incomplete",
-      "disposition": "covered",
-      "rows": [
-        "edges:a required case missing"
-      ],
-      "mutants": [
-        "case_presence_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | {purpose} containment cases incomplete | cases[key].get('passed') is True",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "cases[key].get('passed') is True",
-      "message": "{purpose} containment cases incomplete",
-      "disposition": "covered",
-      "rows": [
-        "edges:case not passed",
-        "edges:case passed by a truthy value"
-      ],
-      "mutants": [
-        "case_passed_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | {purpose} containment cases incomplete | cases[key].get('expected') == cases[key].get('observed')",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "cases[key].get('expected') == cases[key].get('observed')",
-      "message": "{purpose} containment cases incomplete",
-      "disposition": "covered",
-      "rows": [
-        "edges:observed differs from expected"
-      ],
-      "mutants": [
-        "case_expected_observed_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | {purpose} containment cases incomplete | cases[key].get('evidence_sha256')",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "cases[key].get('evidence_sha256')",
-      "message": "{purpose} containment cases incomplete",
-      "disposition": "covered",
-      "rows": [
-        "edges:case names no evidence"
-      ],
-      "mutants": [
-        "case_evidence_named_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | unsupported capability evidence schema | proof.get('schema_version') != 1",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "proof.get('schema_version') != 1",
-      "message": "unsupported capability evidence schema",
-      "disposition": "covered",
-      "rows": [
-        "edges:unsupported proof schema"
-      ],
-      "mutants": [
-        "proof_schema_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | {purpose} retained test evidence absent or changed | not path",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "not path",
-      "message": "{purpose} retained test evidence absent or changed",
-      "disposition": "covered",
-      "rows": [
-        "edges:evidence path not listed"
-      ],
-      "mutants": [
-        "evidence_path_present_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | {purpose} retained test evidence absent or changed | not Path(path).is_absolute()",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "not Path(path).is_absolute()",
-      "message": "{purpose} retained test evidence absent or changed",
-      "disposition": "covered",
-      "rows": [
-        "edges:evidence path relative"
-      ],
-      "mutants": [
-        "evidence_path_absolute_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | {purpose} retained test evidence absent or changed | digest(raw) != value",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "digest(raw) != value",
-      "message": "{purpose} retained test evidence absent or changed",
-      "disposition": "covered",
-      "rows": [
-        "edges:evidence file swapped for one with other bytes"
-      ],
-      "mutants": [
-        "evidence_bytes_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | retained evidence does not substantiate the claimed capability | try measured = json.loads(raw)",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "implicit",
-      "text": "try measured = json.loads(raw)",
-      "message": "retained evidence does not substantiate the claimed capability",
-      "disposition": "implicit",
-      "rows": [
-        "edges:evidence bytes are not JSON at all"
-      ],
-      "mutants": [],
-      "reason": "a row exercises this refusal at R27: evidence whose bytes are not JSON at all reaches the handler and is refused. No mutant is bound to it, and the ledger refused the binding that was tried, because the atom is a try statement rather than a deletable condition. The row proves the refusal fires; nothing here proves the statement is load-bearing, and those are two different claims"
-    },
-    {
-      "id": "validate_capability | selects measured_at | isinstance(measured, dict)",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "expression",
-      "text": "isinstance(measured, dict)",
-      "message": "selects measured_at",
-      "disposition": "structural",
-      "rows": [],
-      "mutants": [],
-      "reason": "selection: the check time is read only from an object"
-    },
-    {
-      "id": "validate_capability | selects measured_case | isinstance(measured, dict)",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "expression",
-      "text": "isinstance(measured, dict)",
-      "message": "selects measured_case",
-      "disposition": "structural",
-      "rows": [],
-      "mutants": [],
-      "reason": "selection: the case is read only from an object"
-    },
-    {
-      "id": "validate_capability | retained evidence does not substantiate the claimed capability | isinstance(measured, dict)",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "isinstance(measured, dict)",
-      "message": "retained evidence does not substantiate the claimed capability",
-      "disposition": "covered",
-      "rows": [
-        "edges:evidence is JSON but not an object"
-      ],
-      "mutants": [
-        "evidence_object_shape_unchecked"
-      ],
-      "reason": "covered at R27 by a row that writes the evidence bytes directly instead of through json.dumps of a mapping. The recorded impossibility was a limit of the test helper, never of the gate"
-    },
-    {
-      "id": "validate_capability | retained evidence does not substantiate the claimed capability | measured.get('schema_version') == 1",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "measured.get('schema_version') == 1",
-      "message": "retained evidence does not substantiate the claimed capability",
-      "disposition": "covered",
-      "rows": [
-        "edges:evidence of another schema"
-      ],
-      "mutants": [
-        "evidence_schema_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | retained evidence does not substantiate the claimed capability | measured.get('purpose') == purpose",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "measured.get('purpose') == purpose",
-      "message": "retained evidence does not substantiate the claimed capability",
-      "disposition": "covered",
-      "rows": [
-        "edges:evidence of another purpose"
-      ],
-      "mutants": [
-        "evidence_purpose_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | retained evidence does not substantiate the claimed capability | measured.get('configuration_hash') == expected",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "measured.get('configuration_hash') == expected",
-      "message": "retained evidence does not substantiate the claimed capability",
-      "disposition": "covered",
-      "rows": [
-        "edges:evidence for another configuration"
-      ],
-      "mutants": [
-        "evidence_configuration_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | retained evidence does not substantiate the claimed capability | isinstance(measured_case, dict)",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "isinstance(measured_case, dict)",
-      "message": "retained evidence does not substantiate the claimed capability",
-      "disposition": "covered",
-      "rows": [
-        "edges:evidence case that is not a mapping"
-      ],
-      "mutants": [
-        "measured_case_is_mapping_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | retained evidence does not substantiate the claimed capability | measured_case.get('passed') is True",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "measured_case.get('passed') is True",
-      "message": "retained evidence does not substantiate the claimed capability",
-      "disposition": "covered",
-      "rows": [
-        "edges:evidence case not passed"
-      ],
-      "mutants": [
-        "evidence_case_passed_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | retained evidence does not substantiate the claimed capability | isinstance(measured_case.get('measurement'), dict)",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "isinstance(measured_case.get('measurement'), dict)",
-      "message": "retained evidence does not substantiate the claimed capability",
-      "disposition": "covered",
-      "rows": [
-        "edges:evidence case measurement not a mapping"
-      ],
-      "mutants": [
-        "measurement_type_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | retained evidence does not substantiate the claimed capability | bool(measured_case['measurement'])",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "bool(measured_case['measurement'])",
-      "message": "retained evidence does not substantiate the claimed capability",
-      "disposition": "covered",
-      "rows": [
-        "edges:evidence case with an empty measurement"
-      ],
-      "mutants": [
-        "measurement_nonempty_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | retained evidence does not substantiate the claimed capability | measured.get('probe_harness_sha256') == proof.get('probe_harness_sha256')",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "measured.get('probe_harness_sha256') == proof.get('probe_harness_sha256')",
-      "message": "retained evidence does not substantiate the claimed capability",
-      "disposition": "covered",
-      "rows": [
-        "edges:evidence from another harness"
-      ],
-      "mutants": [
-        "evidence_harness_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | retained evidence does not substantiate the claimed capability | bool(measured.get('probe_harness_sha256'))",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "bool(measured.get('probe_harness_sha256'))",
-      "message": "retained evidence does not substantiate the claimed capability",
-      "disposition": "covered",
-      "rows": [
-        "edges:no harness identity on either side"
-      ],
-      "mutants": [
-        "harness_nonempty_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | retained evidence does not substantiate the claimed capability | measured_at == proof.get('checked_at')",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "measured_at == proof.get('checked_at')",
-      "message": "retained evidence does not substantiate the claimed capability",
-      "disposition": "covered",
-      "rows": [
-        "edges:evidence from an older run"
-      ],
-      "mutants": [
-        "evidence_time_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | retained evidence does not substantiate the claimed capability | measured.get('executable_sha256') == proof.get('executable_sha256')",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "measured.get('executable_sha256') == proof.get('executable_sha256')",
-      "message": "retained evidence does not substantiate the claimed capability",
-      "disposition": "covered",
-      "rows": [
-        "edges:evidence from another executable"
-      ],
-      "mutants": [
-        "evidence_executable_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | retained evidence does not substantiate the claimed capability | measured.get('runtime_files') == proof.get('runtime_files', {})",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "measured.get('runtime_files') == proof.get('runtime_files', {})",
-      "message": "retained evidence does not substantiate the claimed capability",
-      "disposition": "covered",
-      "rows": [
-        "edges:evidence naming other runtime files"
-      ],
-      "mutants": [
-        "evidence_runtime_files_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | guards valid = _model_attestation_measured(measured_case['measurement']) | valid",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "expression",
-      "text": "valid",
-      "message": "guards valid = _model_attestation_measured(measured_case['measurement'])",
-      "disposition": "structural",
-      "rows": [],
-      "mutants": [],
-      "reason": "relay: the attestation invariant is asked only of evidence already bound"
-    },
-    {
-      "id": "validate_capability | guards valid = _model_attestation_measured(measured_case['measurement']) | purpose == 'provider'",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "expression",
-      "text": "purpose == 'provider'",
-      "message": "guards valid = _model_attestation_measured(measured_case['measurement'])",
-      "disposition": "structural",
-      "rows": [],
-      "mutants": [],
-      "reason": "purpose scope: the model-attestation invariant is provider-only"
-    },
-    {
-      "id": "validate_capability | guards valid = _model_attestation_measured(measured_case['measurement']) | case == 'model_attestation'",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "expression",
-      "text": "case == 'model_attestation'",
-      "message": "guards valid = _model_attestation_measured(measured_case['measurement'])",
-      "disposition": "structural",
-      "rows": [],
-      "mutants": [],
-      "reason": "selection: which case carries the model measurement"
-    },
-    {
-      "id": "validate_capability | retained evidence does not substantiate the claimed capability | _model_attestation_measured(measured_case['measurement'])",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "expression",
-      "text": "_model_attestation_measured(measured_case['measurement'])",
-      "message": "retained evidence does not substantiate the claimed capability",
-      "disposition": "covered",
-      "rows": [
-        "edges:recorded tier withdrawn",
-        "edges:no evidenced positive call"
-      ],
-      "mutants": [
-        "attestation_case_not_bound"
-      ],
-      "reason": "delegation to the invariant, whose own conditions are inventoried in _model_attestation_measured; it carries evidence, so it is covered rather than a judgement"
-    },
-    {
-      "id": "validate_capability | guards staged = {'measurement': measured_case['measurement'], 'checked_at': measured_at | valid",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "expression",
-      "text": "valid",
-      "message": "guards staged = {'measurement': measured_case['measurement'], 'checked_at': measured_at",
-      "disposition": "structural",
-      "rows": [],
-      "mutants": [],
-      "reason": "relay: the measurement is staged only when the evidence it came from was validated"
-    },
-    {
-      "id": "validate_capability | retained evidence does not substantiate the claimed capability | not valid",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "expression",
-      "text": "not valid",
-      "message": "retained evidence does not substantiate the claimed capability",
-      "disposition": "structural",
-      "rows": [],
-      "mutants": [],
-      "reason": "relay of the decision built above"
-    },
-    {
-      "id": "validate_capability | {purpose} executable changed after proof | not executable.is_absolute()",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "not executable.is_absolute()",
-      "message": "{purpose} executable changed after proof",
-      "disposition": "covered",
-      "rows": [
-        "edges:executable named by a relative path"
-      ],
-      "mutants": [
-        "executable_absolute_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | {purpose} executable changed after proof | digest(executable.read_bytes()) != proof.get('executable_sha256')",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "digest(executable.read_bytes()) != proof.get('executable_sha256')",
-      "message": "{purpose} executable changed after proof",
-      "disposition": "covered",
-      "rows": [
-        "edges:executable changed after proof"
-      ],
-      "mutants": [
-        "executable_hash_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | data-only provider must be one reviewed native executable | purpose == 'provider'",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "purpose == 'provider'",
-      "message": "data-only provider must be one reviewed native executable",
-      "disposition": "structural",
-      "rows": [],
-      "mutants": [],
-      "reason": "purpose scope: only a provider is refused for carrying runtime files"
-    },
-    {
-      "id": "validate_capability | data-only provider must be one reviewed native executable | dependencies",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "dependencies",
-      "message": "data-only provider must be one reviewed native executable",
-      "disposition": "covered",
-      "rows": [
-        "edges:provider carrying a runtime file"
-      ],
-      "mutants": [
-        "provider_runtime_files_allowed"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability | guards assert_non_augmentable_directory(executable.parent) | config.get('kind') == 'docker'",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "expression",
-      "text": "config.get('kind') == 'docker'",
-      "message": "guards assert_non_augmentable_directory(executable.parent)",
-      "disposition": "covered",
-      "rows": [
-        "edges:provider record declaring the docker kind"
-      ],
-      "mutants": [
-        "docker_kind_branch_unguarded"
-      ],
-      "reason": "covered at R27. A provider record that declares the docker kind enters the branch and is refused inside it, measured at the directory guard on its first line rather than at the closure check the row was written expecting"
-    },
-    {
-      "id": "validate_capability | Docker runtime closure file missing from proof | dependencies.get(str(runtime)) != digest(runtime.read_bytes())",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "dependencies.get(str(runtime)) != digest(runtime.read_bytes())",
-      "message": "Docker runtime closure file missing from proof",
-      "disposition": "debt",
-      "rows": [],
-      "mutants": [],
-      "reason": "reachable for a provider on a host whose executable directory cannot be augmented, where the directory guard above it passes and an empty runtime_files mapping then fails this check. No row can produce that host, so it is owed",
-      "provider_reachable": true
-    },
-    {
-      "id": "validate_capability | Docker probe harness changed after host review | proof.get('probe_harness_sha256') != digest(harness.read_bytes())",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "proof.get('probe_harness_sha256') != digest(harness.read_bytes())",
-      "message": "Docker probe harness changed after host review",
-      "disposition": "debt",
-      "rows": [],
-      "mutants": [],
-      "reason": "the closure check above it refuses first for any provider, whose runtime_files mapping is always empty, so no provider record reaches this line",
-      "provider_reachable": false
-    },
-    {
-      "id": "validate_capability | {purpose} script or binary missing from proof | Path(arg).suffix.lower() in {'.py', '.js', '.mjs', '.cjs', '.exe'}",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "Path(arg).suffix.lower() in {'.py', '.js', '.mjs', '.cjs', '.exe'}",
-      "message": "{purpose} script or binary missing from proof",
-      "disposition": "debt",
-      "rows": [],
-      "mutants": [],
-      "reason": "unreachable for a provider: the launchable shape pins argv[1:] to two elements with no script suffix, held by test_the_unreachable_for_a_provider_claims_rest_on_a_clause_this_test_holds. Owed to the verification purpose, which still reaches it",
-      "provider_reachable": false
-    },
-    {
-      "id": "validate_capability | {purpose} script or binary missing from proof | arg not in dependencies",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "arg not in dependencies",
-      "message": "{purpose} script or binary missing from proof",
-      "disposition": "debt",
-      "rows": [],
-      "mutants": [],
-      "reason": "unreachable for a provider, behind the same argv pin and the same test. Owed to the verification purpose",
-      "provider_reachable": false
-    },
-    {
-      "id": "validate_capability | {purpose} runtime dependency changed after proof | not Path(dependency).is_absolute()",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "not Path(dependency).is_absolute()",
-      "message": "{purpose} runtime dependency changed after proof",
-      "disposition": "debt",
-      "rows": [],
-      "mutants": [],
-      "reason": "unreachable for a provider, which is refused for carrying any runtime file before the loop is entered; the order is held by the same test. Owed to the verification purpose",
-      "provider_reachable": false
-    },
-    {
-      "id": "validate_capability | {purpose} runtime dependency changed after proof | digest(raw) != expected_hash",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "condition",
-      "text": "digest(raw) != expected_hash",
-      "message": "{purpose} runtime dependency changed after proof",
-      "disposition": "debt",
-      "rows": [],
-      "mutants": [],
-      "reason": "unreachable for a provider, behind the same refusal and the same test. Owed to the verification purpose",
-      "provider_reachable": false
-    },
-    {
-      "id": "validate_capability | guards observed.update(staged) | observed is not None",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "expression",
-      "text": "observed is not None",
-      "message": "guards observed.update(staged)",
-      "disposition": "structural",
-      "rows": [],
-      "mutants": [],
-      "reason": "the caller asked for the measurement or did not; `invoke` passes no sink, and a mutant that removes it is `measurement_not_handed_back`, which the panel rows kill"
-    },
-    {
-      "id": "_launch_refusal | only the codex vendor key may launch a reviewed data-only worker | name != 'codex'",
-      "module": "project_creator/providers.py",
-      "function": "_launch_refusal",
-      "kind": "condition",
-      "text": "name != 'codex'",
-      "message": "only the codex vendor key may launch a reviewed data-only worker",
-      "disposition": "covered",
-      "rows": [
-        "edges:filed under another vendor key",
-        "edges:no vendor key named"
-      ],
-      "mutants": [
-        "launchable_vendor_key_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "_launch_refusal | provider capability is not in a launchable data-only shape | config.get('auth_mode') == 'codex-subscription'",
-      "module": "project_creator/providers.py",
-      "function": "_launch_refusal",
-      "kind": "condition",
-      "text": "config.get('auth_mode') == 'codex-subscription'",
-      "message": "provider capability is not in a launchable data-only shape",
-      "disposition": "covered",
-      "rows": [
-        "edges:no subscription auth mode"
-      ],
-      "mutants": [
-        "launchable_auth_mode_unchecked",
-        "launchable_shape_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "_launch_refusal | provider capability is not in a launchable data-only shape | isinstance(template, list)",
-      "module": "project_creator/providers.py",
-      "function": "_launch_refusal",
-      "kind": "condition",
-      "text": "isinstance(template, list)",
-      "message": "provider capability is not in a launchable data-only shape",
-      "disposition": "covered",
-      "rows": [
-        "edges:argv that is not a list"
-      ],
-      "mutants": [
-        "launchable_template_type_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "_launch_refusal | provider capability is not in a launchable data-only shape | template[1:] == ['--model', '{model}']",
-      "module": "project_creator/providers.py",
-      "function": "_launch_refusal",
-      "kind": "condition",
-      "text": "template[1:] == ['--model', '{model}']",
-      "message": "provider capability is not in a launchable data-only shape",
-      "disposition": "covered",
-      "rows": [
-        "edges:argv of the wrong length",
-        "edges:argv template changed"
-      ],
-      "mutants": [
-        "launchable_template_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "_launch_refusal | provider capability is not in a launchable data-only shape | isinstance(template[0], str)",
-      "module": "project_creator/providers.py",
-      "function": "_launch_refusal",
-      "kind": "condition",
-      "text": "isinstance(template[0], str)",
-      "message": "provider capability is not in a launchable data-only shape",
-      "disposition": "covered",
-      "rows": [
-        "edges:argv whose first element is not a string"
-      ],
-      "mutants": [
-        "launchable_argv0_type_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "_launch_refusal | provider capability is not in a launchable data-only shape | Path(template[0]).suffix.lower() == '.exe'",
-      "module": "project_creator/providers.py",
-      "function": "_launch_refusal",
-      "kind": "condition",
-      "text": "Path(template[0]).suffix.lower() == '.exe'",
-      "message": "provider capability is not in a launchable data-only shape",
-      "disposition": "covered",
-      "rows": [
-        "edges:executable is not an exe"
-      ],
-      "mutants": [
-        "launchable_exe_suffix_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "_launch_refusal | provider capability is not in a launchable data-only shape | _attestation_mode(config) is not None",
-      "module": "project_creator/providers.py",
-      "function": "_launch_refusal",
-      "kind": "condition",
-      "text": "_attestation_mode(config) is not None",
-      "message": "provider capability is not in a launchable data-only shape",
-      "disposition": "covered",
-      "rows": [
-        "edges:no attestation block at all"
-      ],
-      "mutants": [
-        "launchable_mode_unchecked"
-      ],
-      "reason": "delegation; the block's own conditions are inventoried in _attestation_mode"
-    },
-    {
-      "id": "_attestation_mode | via _attestation_mode | isinstance(attestation, dict)",
-      "module": "project_creator/providers.py",
-      "function": "_attestation_mode",
-      "kind": "condition",
-      "text": "isinstance(attestation, dict)",
-      "message": "via _attestation_mode",
-      "disposition": "covered",
-      "rows": [
-        "edges:no attestation block at all"
-      ],
-      "mutants": [
-        "mode_block_type_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "_attestation_mode | via _attestation_mode | set(attestation) == {'mode'}",
-      "module": "project_creator/providers.py",
-      "function": "_attestation_mode",
-      "kind": "condition",
-      "text": "set(attestation) == {'mode'}",
-      "message": "via _attestation_mode",
-      "disposition": "covered",
-      "rows": [
-        "edges:attestation block with an extra key"
-      ],
-      "mutants": [
-        "mode_exact_keys_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "_attestation_mode | via _attestation_mode | isinstance(attestation['mode'], str)",
-      "module": "project_creator/providers.py",
-      "function": "_attestation_mode",
-      "kind": "condition",
-      "text": "isinstance(attestation['mode'], str)",
-      "message": "via _attestation_mode",
-      "disposition": "covered",
-      "rows": [
-        "edges:attestation whose mode is not a string"
-      ],
-      "mutants": [
-        "mode_value_type_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "_attestation_mode | via _attestation_mode | attestation['mode'] in _ADMITTED_EVIDENCE",
-      "module": "project_creator/providers.py",
-      "function": "_attestation_mode",
-      "kind": "condition",
-      "text": "attestation['mode'] in _ADMITTED_EVIDENCE",
-      "message": "via _attestation_mode",
-      "disposition": "covered",
-      "rows": [
-        "edges:attestation naming an unknown mode"
-      ],
-      "mutants": [
-        "mode_admitted_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "_model_attestation_measured | via _model_attestation_measured | measurement.get('recorded_tier_withdrawn') is False",
-      "module": "project_creator/providers.py",
-      "function": "_model_attestation_measured",
-      "kind": "condition",
-      "text": "measurement.get('recorded_tier_withdrawn') is False",
-      "message": "via _model_attestation_measured",
-      "disposition": "covered",
-      "rows": [
-        "edges:recorded tier withdrawn",
-        "edges:recorded tier withdrawal absent"
-      ],
-      "mutants": [
-        "withdrawal_unchecked",
-        "attestation_measured_always_true"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "_model_attestation_measured | via _model_attestation_measured | type(calls) is int",
-      "module": "project_creator/providers.py",
-      "function": "_model_attestation_measured",
-      "kind": "condition",
-      "text": "type(calls) is int",
-      "message": "via _model_attestation_measured",
-      "disposition": "covered",
-      "rows": [
-        "edges:evidenced positive calls not an integer"
-      ],
-      "mutants": [
-        "evidenced_calls_type_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "_model_attestation_measured | via _model_attestation_measured | calls > 0",
-      "module": "project_creator/providers.py",
-      "function": "_model_attestation_measured",
-      "kind": "condition",
-      "text": "calls > 0",
-      "message": "via _model_attestation_measured",
-      "disposition": "covered",
-      "rows": [
-        "edges:no evidenced positive call"
-      ],
-      "mutants": [
-        "evidenced_calls_count_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "validate_capability -> assert_non_augmentable_directory",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "callee",
-      "text": "assert_non_augmentable_directory",
-      "message": "",
-      "disposition": "structural",
-      "rows": [],
-      "mutants": [],
-      "reason": "inside the Docker branch, which is itself a recorded debt; its own refusals are outside this list"
-    },
-    {
-      "id": "validate_capability -> digest",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "callee",
-      "text": "digest",
-      "message": "",
-      "disposition": "structural",
-      "rows": [],
-      "mutants": [],
-      "reason": "hashing; refuses nothing"
-    },
-    {
-      "id": "validate_capability -> provider_environment",
-      "module": "project_creator/providers.py",
-      "function": "validate_capability",
-      "kind": "callee",
-      "text": "provider_environment",
-      "message": "",
-      "disposition": "structural",
-      "rows": [],
-      "mutants": [],
-      "reason": "builds the environment the binding is computed over; refuses nothing"
-    },
-    {
-      "id": "_reviewed_locks | selects runtime_hashes | runtime_hashes is None",
-      "module": "project_creator/processes.py",
-      "function": "_reviewed_locks",
-      "kind": "expression",
-      "text": "runtime_hashes is None",
-      "message": "selects runtime_hashes",
-      "disposition": "structural",
-      "rows": [],
-      "mutants": [],
-      "reason": "selection: an absent closure is an empty one"
-    },
-    {
-      "id": "_reviewed_locks | invalid reviewed runtime closure | not isinstance(runtime_hashes, dict)",
-      "module": "project_creator/processes.py",
-      "function": "_reviewed_locks",
-      "kind": "condition",
-      "text": "not isinstance(runtime_hashes, dict)",
-      "message": "invalid reviewed runtime closure",
-      "disposition": "covered",
-      "rows": [
-        "lock:closure is not a mapping"
-      ],
-      "mutants": [
-        "closure_shape_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "_reviewed_locks | invalid reviewed runtime closure | isinstance(name, str)",
-      "module": "project_creator/processes.py",
-      "function": "_reviewed_locks",
-      "kind": "condition",
-      "text": "isinstance(name, str)",
-      "message": "invalid reviewed runtime closure",
-      "disposition": "covered",
-      "rows": [
-        "lock:closure name is not a string"
-      ],
-      "mutants": [
-        "closure_name_type_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "_reviewed_locks | invalid reviewed runtime closure | _valid_sha256(value)",
-      "module": "project_creator/processes.py",
-      "function": "_reviewed_locks",
-      "kind": "condition",
-      "text": "_valid_sha256(value)",
-      "message": "invalid reviewed runtime closure",
-      "disposition": "covered",
-      "rows": [
-        "lock:closure hash is not a digest"
-      ],
-      "mutants": [
-        "closure_hash_shape_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "_reviewed_locks | guards reviewed[argv[0]] = executable_hash | executable_hash is not None",
-      "module": "project_creator/processes.py",
-      "function": "_reviewed_locks",
-      "kind": "expression",
-      "text": "executable_hash is not None",
-      "message": "guards reviewed[argv[0]] = executable_hash",
-      "disposition": "covered",
-      "rows": [
-        "lock:file changed before launch"
-      ],
-      "mutants": [
-        "executable_never_locked_at_launch"
-      ],
-      "reason": "decides whether argv[0] is hash-locked at the moment of launch, which is the property REQ-LC-023 names; round 25 dropped it silently (R25-SPEC-02)"
-    },
-    {
-      "id": "_reviewed_locks | conflicting reviewed file hashes | name in reviewed",
-      "module": "project_creator/processes.py",
-      "function": "_reviewed_locks",
-      "kind": "condition",
-      "text": "name in reviewed",
-      "message": "conflicting reviewed file hashes",
-      "disposition": "covered",
-      "rows": [
-        "lock:two hashes for one file"
-      ],
-      "mutants": [
-        "conflicting_hashes_allowed"
-      ],
-      "reason": "also the scope of the conflict test: it applies only to a name already reviewed"
-    },
-    {
-      "id": "_reviewed_locks | conflicting reviewed file hashes | reviewed[name] != value",
-      "module": "project_creator/processes.py",
-      "function": "_reviewed_locks",
-      "kind": "condition",
-      "text": "reviewed[name] != value",
-      "message": "conflicting reviewed file hashes",
-      "disposition": "covered",
-      "rows": [
-        "lock:two hashes for one file"
-      ],
-      "mutants": [
-        "conflicting_hashes_allowed"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "_reviewed_locks | atomic reviewed runtime binding is unsupported on this host | reviewed",
-      "module": "project_creator/processes.py",
-      "function": "_reviewed_locks",
-      "kind": "condition",
-      "text": "reviewed",
-      "message": "atomic reviewed runtime binding is unsupported on this host",
-      "disposition": "structural",
-      "rows": [],
-      "mutants": [],
-      "reason": "scope: an empty closure locks nothing, so the host check does not apply"
-    },
-    {
-      "id": "_reviewed_locks | atomic reviewed runtime binding is unsupported on this host | os.name != 'nt'",
-      "module": "project_creator/processes.py",
-      "function": "_reviewed_locks",
-      "kind": "condition",
-      "text": "os.name != 'nt'",
-      "message": "atomic reviewed runtime binding is unsupported on this host",
-      "disposition": "debt",
-      "rows": [],
-      "mutants": [],
-      "reason": "cannot fire on Windows, which is the host this suite runs on; a non-Windows run is owed",
-      "provider_reachable": false
-    },
-    {
-      "id": "_reviewed_locks | reviewed runtime path is not immutable | not path.is_absolute()",
-      "module": "project_creator/processes.py",
-      "function": "_reviewed_locks",
-      "kind": "condition",
-      "text": "not path.is_absolute()",
-      "message": "reviewed runtime path is not immutable",
-      "disposition": "covered",
-      "rows": [
-        "lock:relative reviewed path"
-      ],
-      "mutants": [
-        "path_immutability_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "_reviewed_locks | reviewed runtime path is not immutable | not _valid_sha256(expected)",
-      "module": "project_creator/processes.py",
-      "function": "_reviewed_locks",
-      "kind": "condition",
-      "text": "not _valid_sha256(expected)",
-      "message": "reviewed runtime path is not immutable",
-      "disposition": "debt",
-      "rows": [],
-      "mutants": [],
-      "reason": "a malformed executable hash reaches this line only from a caller, and the gate validates that hash before the launch path is entered",
-      "provider_reachable": false
-    },
-    {
-      "id": "_reviewed_locks | reviewed runtime path is not immutable | not _reparse_free(path)",
-      "module": "project_creator/processes.py",
-      "function": "_reviewed_locks",
-      "kind": "condition",
-      "text": "not _reparse_free(path)",
-      "message": "reviewed runtime path is not immutable",
-      "disposition": "debt",
-      "rows": [],
-      "mutants": [],
-      "reason": "reachable for a provider: a junction in the reviewed path is a real state of the world and no fixture in this suite creates one",
-      "provider_reachable": true
-    },
-    {
-      "id": "_locked_windows_reviewed_path | guards stream.close() | stream",
-      "module": "project_creator/processes.py",
-      "function": "_locked_windows_reviewed_path",
-      "kind": "expression",
-      "text": "stream",
-      "message": "guards stream.close()",
-      "disposition": "structural",
-      "rows": [],
-      "mutants": [],
-      "reason": "cleanup: close the handle only if it was opened"
-    },
-    {
-      "id": "_locked_windows_reviewed_path | could not lock reviewed path ancestry | handle == invalid",
-      "module": "project_creator/processes.py",
-      "function": "_locked_windows_reviewed_path",
-      "kind": "condition",
-      "text": "handle == invalid",
-      "message": "could not lock reviewed path ancestry",
-      "disposition": "debt",
-      "rows": [],
-      "mutants": [],
-      "reason": "reachable for a provider; no row can make CreateFileW fail on an ancestor without Win32 injection",
-      "provider_reachable": true
-    },
-    {
-      "id": "_locked_windows_reviewed_path | reviewed path ancestry contains a reparse point | attributes == 4294967295",
-      "module": "project_creator/processes.py",
-      "function": "_locked_windows_reviewed_path",
-      "kind": "condition",
-      "text": "attributes == 4294967295",
-      "message": "reviewed path ancestry contains a reparse point",
-      "disposition": "debt",
-      "rows": [],
-      "mutants": [],
-      "reason": "reachable for a provider; OS-level, owed",
-      "provider_reachable": true
-    },
-    {
-      "id": "_locked_windows_reviewed_path | reviewed path ancestry contains a reparse point | attributes & 1024",
-      "module": "project_creator/processes.py",
-      "function": "_locked_windows_reviewed_path",
-      "kind": "condition",
-      "text": "attributes & 1024",
-      "message": "reviewed path ancestry contains a reparse point",
-      "disposition": "debt",
-      "rows": [],
-      "mutants": [],
-      "reason": "reachable for a provider; a reparse-point fixture is owed",
-      "provider_reachable": true
-    },
-    {
-      "id": "_locked_windows_reviewed_path | reviewed path ancestry contains a reparse point | not _same_windows_path(_windows_final_path(handle), directory)",
-      "module": "project_creator/processes.py",
-      "function": "_locked_windows_reviewed_path",
-      "kind": "condition",
-      "text": "not _same_windows_path(_windows_final_path(handle), directory)",
-      "message": "reviewed path ancestry contains a reparse point",
-      "disposition": "debt",
-      "rows": [],
-      "mutants": [],
-      "reason": "reachable for a provider; OS-level, owed",
-      "provider_reachable": true
-    },
-    {
-      "id": "_locked_windows_reviewed_path | could not lock reviewed file | handle == invalid",
-      "module": "project_creator/processes.py",
-      "function": "_locked_windows_reviewed_path",
-      "kind": "condition",
-      "text": "handle == invalid",
-      "message": "could not lock reviewed file",
-      "disposition": "debt",
-      "rows": [],
-      "mutants": [],
-      "reason": "reachable for a provider; OS-level, owed",
-      "provider_reachable": true
-    },
-    {
-      "id": "_locked_windows_reviewed_path | reviewed file path identity changed | not _same_windows_path(_windows_final_path(handle), path)",
-      "module": "project_creator/processes.py",
-      "function": "_locked_windows_reviewed_path",
-      "kind": "condition",
-      "text": "not _same_windows_path(_windows_final_path(handle), path)",
-      "message": "reviewed file path identity changed",
-      "disposition": "debt",
-      "rows": [],
-      "mutants": [],
-      "reason": "reachable for a provider; OS-level, owed",
-      "provider_reachable": true
-    },
-    {
-      "id": "_locked_windows_reviewed_path | reviewed file changed before launch | observed != expected_sha256",
-      "module": "project_creator/processes.py",
-      "function": "_locked_windows_reviewed_path",
-      "kind": "condition",
-      "text": "observed != expected_sha256",
-      "message": "reviewed file changed before launch",
-      "disposition": "covered",
-      "rows": [
-        "lock:file changed before launch"
-      ],
-      "mutants": [
-        "launch_hash_unchecked"
-      ],
-      "reason": ""
-    },
-    {
-      "id": "_reviewed_locks -> _reparse_free",
-      "module": "project_creator/processes.py",
-      "function": "_reviewed_locks",
-      "kind": "callee",
-      "text": "_reparse_free",
-      "message": "",
-      "disposition": "structural",
-      "rows": [],
-      "mutants": [],
-      "reason": "reparse predicate; its OS-level conditions are outside this list"
-    },
-    {
-      "id": "_reviewed_locks -> _valid_sha256",
-      "module": "project_creator/processes.py",
-      "function": "_reviewed_locks",
-      "kind": "callee",
-      "text": "_valid_sha256",
-      "message": "",
-      "disposition": "structural",
-      "rows": [],
-      "mutants": [],
-      "reason": "digest-shape predicate, decided at the conditions that call it"
-    },
-    {
-      "id": "_locked_windows_reviewed_path -> _same_windows_path",
-      "module": "project_creator/processes.py",
-      "function": "_locked_windows_reviewed_path",
-      "kind": "callee",
-      "text": "_same_windows_path",
-      "message": "",
-      "disposition": "structural",
-      "rows": [],
-      "mutants": [],
-      "reason": "Win32 path identity; outside this list"
-    },
-    {
-      "id": "_locked_windows_reviewed_path -> _windows_final_path",
-      "module": "project_creator/processes.py",
-      "function": "_locked_windows_reviewed_path",
-      "kind": "callee",
-      "text": "_windows_final_path",
-      "message": "",
-      "disposition": "structural",
-      "rows": [],
-      "mutants": [],
-      "reason": "Win32 final path; outside this list"
-    }
+ "scope": {
+  "project_creator/providers.py": [
+   "validate_capability",
+   "_launch_refusal",
+   "_attestation_mode",
+   "_model_attestation_measured"
+  ],
+  "project_creator/processes.py": [
+   "_reviewed_locks",
+   "_locked_windows_reviewed_path"
   ]
+ },
+ "row_sources": {
+  "edges": "tests/test_edges.py",
+  "lock": "tests/test_controller.py"
+ },
+ "launch_exempt": {
+  "model in arg": "reads the model chosen for this call, not the record; the gate never sees a model",
+  "any(inference_cwd.iterdir())": "reads the temporary inference directory this call just created, not the record; the gate has no such directory. Round 25's mirror could not see this one at all because it sits inside the block that encloses the launch (R25-SEC-01, R25-SPEC-06)"
+ },
+ "launch_precondition_count": 4,
+ "conditions": [
+  {
+   "id": "validate_capability | capability is not pinned by the trusted host admission registry | _HOST_CAPABILITIES.get(digest(config)) != purpose",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "_HOST_CAPABILITIES.get(digest(config)) != purpose",
+   "message": "capability is not pinned by the trusted host admission registry",
+   "disposition": "covered",
+   "rows": [
+    "edges:not pinned by the host"
+   ],
+   "mutants": [
+    "host_pin_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | provider is not an admitted data-only worker | purpose == 'provider'",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "purpose == 'provider'",
+   "message": "provider is not an admitted data-only worker",
+   "disposition": "covered",
+   "rows": [
+    "edges:another output kind",
+    "edges:another filesystem scope",
+    "edges:another loader policy"
+   ],
+   "mutants": [
+    "provider_shape_unchecked"
+   ],
+   "reason": "also the purpose scope: the data-only worker check does not apply to the verification purpose"
+  },
+  {
+   "id": "validate_capability | provider is not an admitted data-only worker | config.get('output') not in _ADMITTED_PROVIDER_OUTPUTS",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "config.get('output') not in _ADMITTED_PROVIDER_OUTPUTS",
+   "message": "provider is not an admitted data-only worker",
+   "disposition": "covered",
+   "rows": [
+    "edges:another output kind"
+   ],
+   "mutants": [
+    "provider_output_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | provider is not an admitted data-only worker | config.get('filesystem_scope') != 'codex-home-auth-only'",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "config.get('filesystem_scope') != 'codex-home-auth-only'",
+   "message": "provider is not an admitted data-only worker",
+   "disposition": "covered",
+   "rows": [
+    "edges:another filesystem scope"
+   ],
+   "mutants": [
+    "provider_scope_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | provider is not an admitted data-only worker | config.get('loader_policy') != 'pe-dependent-load-system32'",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "config.get('loader_policy') != 'pe-dependent-load-system32'",
+   "message": "provider is not an admitted data-only worker",
+   "disposition": "covered",
+   "rows": [
+    "edges:another loader policy"
+   ],
+   "mutants": [
+    "provider_loader_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | guards refusal = _launch_refusal(config, name) | purpose == 'provider'",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "expression",
+   "text": "purpose == 'provider'",
+   "message": "guards refusal = _launch_refusal(config, name)",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "purpose scope: only a provider record is launched"
+  },
+  {
+   "id": "validate_capability | via refusal | _launch_refusal(config, name)",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "expression",
+   "text": "_launch_refusal(config, name)",
+   "message": "via refusal",
+   "disposition": "covered",
+   "rows": [
+    "edges:filed under another vendor key",
+    "edges:no vendor key named"
+   ],
+   "mutants": [
+    "gate_ignores_the_vendor_name"
+   ],
+   "reason": "delegation to the owner `invoke` also calls; its own conditions are inventoried in _launch_refusal"
+  },
+  {
+   "id": "validate_capability | via refusal | refusal",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "expression",
+   "text": "refusal",
+   "message": "via refusal",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "relay of the owner's answer, which is inventoried where it is decided"
+  },
+  {
+   "id": "validate_capability | provider auth-home/runtime environment changed after host review | purpose == 'provider'",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "purpose == 'provider'",
+   "message": "provider auth-home/runtime environment changed after host review",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "purpose scope: the environment binding is a provider-only refusal"
+  },
+  {
+   "id": "validate_capability | provider auth-home/runtime environment changed after host review | proof.get('environment_hash') != digest(provider_environment(config) if environment is None else environment)",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "proof.get('environment_hash') != digest(provider_environment(config) if environment is None else environment)",
+   "message": "provider auth-home/runtime environment changed after host review",
+   "disposition": "covered",
+   "rows": [
+    "edges:another environment"
+   ],
+   "mutants": [
+    "environment_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | selects expected | k != 'proof'",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "expression",
+   "text": "k != 'proof'",
+   "message": "selects expected",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "selection: the proof is excluded from the hash it is compared against"
+  },
+  {
+   "id": "validate_capability | {purpose} configuration has no matching containment proof | proof.get('configuration_hash') != expected",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "proof.get('configuration_hash') != expected",
+   "message": "{purpose} configuration has no matching containment proof",
+   "disposition": "covered",
+   "rows": [
+    "edges:proof for another configuration"
+   ],
+   "mutants": [
+    "configuration_hash_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | {purpose} containment proof expired or absent | try checked = datetime.fromisoformat(proof['checked_at'])",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "implicit",
+   "text": "try checked = datetime.fromisoformat(proof['checked_at'])",
+   "message": "{purpose} containment proof expired or absent",
+   "disposition": "implicit",
+   "rows": [
+    "edges:no check time"
+   ],
+   "mutants": [],
+   "reason": "an absent, non-string or unparseable check time raises into the handler that refuses; no mutant can delete an exception, so the row is the whole evidence"
+  },
+  {
+   "id": "validate_capability | {purpose} containment proof expired or absent | checked.tzinfo is None",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "checked.tzinfo is None",
+   "message": "{purpose} containment proof expired or absent",
+   "disposition": "witnessed",
+   "rows": [
+    "edges:check time without a zone"
+   ],
+   "mutants": [
+    "expiry_naive_time_allowed"
+   ],
+   "reason": "subtracting a naive time raises TypeError into the same handler with the same message, so no input isolates this disjunct; the surviving mutant is the witness"
+  },
+  {
+   "id": "validate_capability | {purpose} containment proof expired or absent | age < timedelta(0)",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "age < timedelta(0)",
+   "message": "{purpose} containment proof expired or absent",
+   "disposition": "covered",
+   "rows": [
+    "edges:check time in the future"
+   ],
+   "mutants": [
+    "expiry_future_time_allowed"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | {purpose} containment proof expired or absent | age > _PROOF_LIFETIME",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "age > _PROOF_LIFETIME",
+   "message": "{purpose} containment proof expired or absent",
+   "disposition": "covered",
+   "rows": [
+    "edges:check time past the 30-day expiry"
+   ],
+   "mutants": [
+    "expiry_window_unbounded"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | selects required | purpose == 'verification'",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "expression",
+   "text": "purpose == 'verification'",
+   "message": "selects required",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "selection: which containment cases the purpose requires"
+  },
+  {
+   "id": "validate_capability | {purpose} containment cases incomplete | isinstance(cases.get(key), dict)",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "isinstance(cases.get(key), dict)",
+   "message": "{purpose} containment cases incomplete",
+   "disposition": "covered",
+   "rows": [
+    "edges:a required case missing"
+   ],
+   "mutants": [
+    "case_presence_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | {purpose} containment cases incomplete | cases[key].get('passed') is True",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "cases[key].get('passed') is True",
+   "message": "{purpose} containment cases incomplete",
+   "disposition": "covered",
+   "rows": [
+    "edges:case not passed",
+    "edges:case passed by a truthy value"
+   ],
+   "mutants": [
+    "case_passed_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | {purpose} containment cases incomplete | cases[key].get('expected') == cases[key].get('observed')",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "cases[key].get('expected') == cases[key].get('observed')",
+   "message": "{purpose} containment cases incomplete",
+   "disposition": "covered",
+   "rows": [
+    "edges:observed differs from expected"
+   ],
+   "mutants": [
+    "case_expected_observed_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | {purpose} containment cases incomplete | cases[key].get('evidence_sha256')",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "cases[key].get('evidence_sha256')",
+   "message": "{purpose} containment cases incomplete",
+   "disposition": "covered",
+   "rows": [
+    "edges:case names no evidence"
+   ],
+   "mutants": [
+    "case_evidence_named_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | unsupported capability evidence schema | proof.get('schema_version') != 1",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "proof.get('schema_version') != 1",
+   "message": "unsupported capability evidence schema",
+   "disposition": "covered",
+   "rows": [
+    "edges:unsupported proof schema"
+   ],
+   "mutants": [
+    "proof_schema_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | {purpose} retained test evidence absent or changed | not path",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "not path",
+   "message": "{purpose} retained test evidence absent or changed",
+   "disposition": "covered",
+   "rows": [
+    "edges:evidence path not listed"
+   ],
+   "mutants": [
+    "evidence_path_present_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | {purpose} retained test evidence absent or changed | not Path(path).is_absolute()",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "not Path(path).is_absolute()",
+   "message": "{purpose} retained test evidence absent or changed",
+   "disposition": "covered",
+   "rows": [
+    "edges:evidence path relative"
+   ],
+   "mutants": [
+    "evidence_path_absolute_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | {purpose} retained test evidence absent or changed | digest(raw) != value",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "digest(raw) != value",
+   "message": "{purpose} retained test evidence absent or changed",
+   "disposition": "covered",
+   "rows": [
+    "edges:evidence file swapped for one with other bytes"
+   ],
+   "mutants": [
+    "evidence_bytes_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | try measured = json.loads(raw)",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "implicit",
+   "text": "try measured = json.loads(raw)",
+   "message": "retained evidence does not substantiate the claimed capability",
+   "disposition": "implicit",
+   "rows": [
+    "edges:evidence bytes are not JSON at all"
+   ],
+   "mutants": [],
+   "reason": "a row exercises this refusal at R27: evidence whose bytes are not JSON at all reaches the handler and is refused. No mutant is bound to it, and the ledger refused the binding that was tried, because the atom is a try statement rather than a deletable condition. The row proves the refusal fires; nothing here proves the statement is load-bearing, and those are two different claims"
+  },
+  {
+   "id": "validate_capability | selects measured_at | isinstance(measured, dict)",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "expression",
+   "text": "isinstance(measured, dict)",
+   "message": "selects measured_at",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "selection: the check time is read only from an object"
+  },
+  {
+   "id": "validate_capability | selects measured_case | isinstance(measured, dict)",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "expression",
+   "text": "isinstance(measured, dict)",
+   "message": "selects measured_case",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "selection: the case is read only from an object"
+  },
+  {
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | isinstance(measured, dict)",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "isinstance(measured, dict)",
+   "message": "retained evidence does not substantiate the claimed capability",
+   "disposition": "covered",
+   "rows": [
+    "edges:evidence is JSON but not an object"
+   ],
+   "mutants": [
+    "evidence_object_shape_unchecked"
+   ],
+   "reason": "covered at R27 by a row that writes the evidence bytes directly instead of through json.dumps of a mapping. The recorded impossibility was a limit of the test helper, never of the gate"
+  },
+  {
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | measured.get('schema_version') == 1",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "measured.get('schema_version') == 1",
+   "message": "retained evidence does not substantiate the claimed capability",
+   "disposition": "covered",
+   "rows": [
+    "edges:evidence of another schema"
+   ],
+   "mutants": [
+    "evidence_schema_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | measured.get('purpose') == purpose",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "measured.get('purpose') == purpose",
+   "message": "retained evidence does not substantiate the claimed capability",
+   "disposition": "covered",
+   "rows": [
+    "edges:evidence of another purpose"
+   ],
+   "mutants": [
+    "evidence_purpose_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | measured.get('configuration_hash') == expected",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "measured.get('configuration_hash') == expected",
+   "message": "retained evidence does not substantiate the claimed capability",
+   "disposition": "covered",
+   "rows": [
+    "edges:evidence for another configuration"
+   ],
+   "mutants": [
+    "evidence_configuration_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | isinstance(measured_case, dict)",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "isinstance(measured_case, dict)",
+   "message": "retained evidence does not substantiate the claimed capability",
+   "disposition": "covered",
+   "rows": [
+    "edges:evidence case that is not a mapping"
+   ],
+   "mutants": [
+    "measured_case_is_mapping_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | measured_case.get('passed') is True",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "measured_case.get('passed') is True",
+   "message": "retained evidence does not substantiate the claimed capability",
+   "disposition": "covered",
+   "rows": [
+    "edges:evidence case not passed"
+   ],
+   "mutants": [
+    "evidence_case_passed_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | isinstance(measured_case.get('measurement'), dict)",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "isinstance(measured_case.get('measurement'), dict)",
+   "message": "retained evidence does not substantiate the claimed capability",
+   "disposition": "covered",
+   "rows": [
+    "edges:evidence case measurement not a mapping"
+   ],
+   "mutants": [
+    "measurement_type_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | bool(measured_case['measurement'])",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "bool(measured_case['measurement'])",
+   "message": "retained evidence does not substantiate the claimed capability",
+   "disposition": "covered",
+   "rows": [
+    "edges:evidence case with an empty measurement"
+   ],
+   "mutants": [
+    "measurement_nonempty_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | measured.get('probe_harness_sha256') == proof.get('probe_harness_sha256')",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "measured.get('probe_harness_sha256') == proof.get('probe_harness_sha256')",
+   "message": "retained evidence does not substantiate the claimed capability",
+   "disposition": "covered",
+   "rows": [
+    "edges:evidence from another harness"
+   ],
+   "mutants": [
+    "evidence_harness_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | bool(measured.get('probe_harness_sha256'))",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "bool(measured.get('probe_harness_sha256'))",
+   "message": "retained evidence does not substantiate the claimed capability",
+   "disposition": "covered",
+   "rows": [
+    "edges:no harness identity on either side"
+   ],
+   "mutants": [
+    "harness_nonempty_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | measured_at == proof.get('checked_at')",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "measured_at == proof.get('checked_at')",
+   "message": "retained evidence does not substantiate the claimed capability",
+   "disposition": "covered",
+   "rows": [
+    "edges:evidence from an older run"
+   ],
+   "mutants": [
+    "evidence_time_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | measured.get('executable_sha256') == proof.get('executable_sha256')",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "measured.get('executable_sha256') == proof.get('executable_sha256')",
+   "message": "retained evidence does not substantiate the claimed capability",
+   "disposition": "covered",
+   "rows": [
+    "edges:evidence from another executable"
+   ],
+   "mutants": [
+    "evidence_executable_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | measured.get('runtime_files') == proof.get('runtime_files', {})",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "measured.get('runtime_files') == proof.get('runtime_files', {})",
+   "message": "retained evidence does not substantiate the claimed capability",
+   "disposition": "covered",
+   "rows": [
+    "edges:evidence naming other runtime files"
+   ],
+   "mutants": [
+    "evidence_runtime_files_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | guards valid = _model_attestation_measured(measured_case['measurement']) | valid",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "expression",
+   "text": "valid",
+   "message": "guards valid = _model_attestation_measured(measured_case['measurement'])",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "relay: the attestation invariant is asked only of evidence already bound"
+  },
+  {
+   "id": "validate_capability | guards valid = _model_attestation_measured(measured_case['measurement']) | purpose == 'provider'",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "expression",
+   "text": "purpose == 'provider'",
+   "message": "guards valid = _model_attestation_measured(measured_case['measurement'])",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "purpose scope: the model-attestation invariant is provider-only"
+  },
+  {
+   "id": "validate_capability | guards valid = _model_attestation_measured(measured_case['measurement']) | case == 'model_attestation'",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "expression",
+   "text": "case == 'model_attestation'",
+   "message": "guards valid = _model_attestation_measured(measured_case['measurement'])",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "selection: which case carries the model measurement"
+  },
+  {
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | _model_attestation_measured(measured_case['measurement'])",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "expression",
+   "text": "_model_attestation_measured(measured_case['measurement'])",
+   "message": "retained evidence does not substantiate the claimed capability",
+   "disposition": "covered",
+   "rows": [
+    "edges:recorded tier withdrawn",
+    "edges:no evidenced positive call"
+   ],
+   "mutants": [
+    "attestation_case_not_bound"
+   ],
+   "reason": "delegation to the invariant, whose own conditions are inventoried in _model_attestation_measured; it carries evidence, so it is covered rather than a judgement"
+  },
+  {
+   "id": "validate_capability | guards staged = {'measurement': measured_case['measurement'], 'checked_at': measured_at | valid",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "expression",
+   "text": "valid",
+   "message": "guards staged = {'measurement': measured_case['measurement'], 'checked_at': measured_at",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "relay: the measurement is staged only when the evidence it came from was validated"
+  },
+  {
+   "id": "validate_capability | retained evidence does not substantiate the claimed capability | not valid",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "expression",
+   "text": "not valid",
+   "message": "retained evidence does not substantiate the claimed capability",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "relay of the decision built above"
+  },
+  {
+   "id": "validate_capability | {purpose} executable changed after proof | not executable.is_absolute()",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "not executable.is_absolute()",
+   "message": "{purpose} executable changed after proof",
+   "disposition": "covered",
+   "rows": [
+    "edges:executable named by a relative path"
+   ],
+   "mutants": [
+    "executable_absolute_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | {purpose} executable changed after proof | digest(executable.read_bytes()) != proof.get('executable_sha256')",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "digest(executable.read_bytes()) != proof.get('executable_sha256')",
+   "message": "{purpose} executable changed after proof",
+   "disposition": "covered",
+   "rows": [
+    "edges:executable changed after proof"
+   ],
+   "mutants": [
+    "executable_hash_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | data-only provider must be one reviewed native executable | purpose == 'provider'",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "purpose == 'provider'",
+   "message": "data-only provider must be one reviewed native executable",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "purpose scope: only a provider is refused for carrying runtime files"
+  },
+  {
+   "id": "validate_capability | data-only provider must be one reviewed native executable | dependencies",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "dependencies",
+   "message": "data-only provider must be one reviewed native executable",
+   "disposition": "covered",
+   "rows": [
+    "edges:provider carrying a runtime file"
+   ],
+   "mutants": [
+    "provider_runtime_files_allowed"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability | guards assert_non_augmentable_directory(executable.parent) | config.get('kind') == 'docker'",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "expression",
+   "text": "config.get('kind') == 'docker'",
+   "message": "guards assert_non_augmentable_directory(executable.parent)",
+   "disposition": "covered",
+   "rows": [
+    "edges:provider record declaring the docker kind"
+   ],
+   "mutants": [
+    "docker_kind_branch_unguarded"
+   ],
+   "reason": "covered at R27. A provider record that declares the docker kind enters the branch and is refused inside it, measured at the directory guard on its first line rather than at the closure check the row was written expecting"
+  },
+  {
+   "id": "validate_capability | Docker runtime closure file missing from proof | dependencies.get(str(runtime)) != digest(runtime.read_bytes())",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "dependencies.get(str(runtime)) != digest(runtime.read_bytes())",
+   "message": "Docker runtime closure file missing from proof",
+   "disposition": "debt",
+   "rows": [],
+   "mutants": [],
+   "reason": "reachable for a provider on a host whose executable directory cannot be augmented, where the directory guard above it passes and an empty runtime_files mapping then fails this check. No row can produce that host, so it is owed",
+   "provider_reachable": true
+  },
+  {
+   "id": "validate_capability | Docker probe harness changed after host review | proof.get('probe_harness_sha256') != digest(harness.read_bytes())",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "proof.get('probe_harness_sha256') != digest(harness.read_bytes())",
+   "message": "Docker probe harness changed after host review",
+   "disposition": "debt",
+   "rows": [],
+   "mutants": [],
+   "reason": "the closure check above it refuses first for any provider, whose runtime_files mapping is always empty, so no provider record reaches this line",
+   "provider_reachable": false
+  },
+  {
+   "id": "validate_capability | {purpose} script or binary missing from proof | Path(arg).suffix.lower() in {'.py', '.js', '.mjs', '.cjs', '.exe'}",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "Path(arg).suffix.lower() in {'.py', '.js', '.mjs', '.cjs', '.exe'}",
+   "message": "{purpose} script or binary missing from proof",
+   "disposition": "debt",
+   "rows": [],
+   "mutants": [],
+   "reason": "unreachable for a provider: the launchable shape pins argv[1:] to two elements with no script suffix, held by test_the_unreachable_for_a_provider_claims_rest_on_a_clause_this_test_holds. Owed to the verification purpose, which still reaches it",
+   "provider_reachable": false
+  },
+  {
+   "id": "validate_capability | {purpose} script or binary missing from proof | arg not in dependencies",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "arg not in dependencies",
+   "message": "{purpose} script or binary missing from proof",
+   "disposition": "debt",
+   "rows": [],
+   "mutants": [],
+   "reason": "unreachable for a provider, behind the same argv pin and the same test. Owed to the verification purpose",
+   "provider_reachable": false
+  },
+  {
+   "id": "validate_capability | {purpose} runtime dependency changed after proof | not Path(dependency).is_absolute()",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "not Path(dependency).is_absolute()",
+   "message": "{purpose} runtime dependency changed after proof",
+   "disposition": "debt",
+   "rows": [],
+   "mutants": [],
+   "reason": "unreachable for a provider, which is refused for carrying any runtime file before the loop is entered; the order is held by the same test. Owed to the verification purpose",
+   "provider_reachable": false
+  },
+  {
+   "id": "validate_capability | {purpose} runtime dependency changed after proof | digest(raw) != expected_hash",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "condition",
+   "text": "digest(raw) != expected_hash",
+   "message": "{purpose} runtime dependency changed after proof",
+   "disposition": "debt",
+   "rows": [],
+   "mutants": [],
+   "reason": "unreachable for a provider, behind the same refusal and the same test. Owed to the verification purpose",
+   "provider_reachable": false
+  },
+  {
+   "id": "validate_capability | guards observed.update(staged) | observed is not None",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "expression",
+   "text": "observed is not None",
+   "message": "guards observed.update(staged)",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "the caller asked for the measurement or did not; `invoke` passes no sink, and a mutant that removes it is `measurement_not_handed_back`, which the panel rows kill"
+  },
+  {
+   "id": "_launch_refusal | only the codex vendor key may launch a reviewed data-only worker | name != 'codex'",
+   "module": "project_creator/providers.py",
+   "function": "_launch_refusal",
+   "kind": "condition",
+   "text": "name != 'codex'",
+   "message": "only the codex vendor key may launch a reviewed data-only worker",
+   "disposition": "covered",
+   "rows": [
+    "edges:filed under another vendor key",
+    "edges:no vendor key named"
+   ],
+   "mutants": [
+    "launchable_vendor_key_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "_launch_refusal | provider capability is not in a launchable data-only shape | config.get('auth_mode') == 'codex-subscription'",
+   "module": "project_creator/providers.py",
+   "function": "_launch_refusal",
+   "kind": "condition",
+   "text": "config.get('auth_mode') == 'codex-subscription'",
+   "message": "provider capability is not in a launchable data-only shape",
+   "disposition": "covered",
+   "rows": [
+    "edges:no subscription auth mode"
+   ],
+   "mutants": [
+    "launchable_auth_mode_unchecked",
+    "launchable_shape_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "_launch_refusal | provider capability is not in a launchable data-only shape | isinstance(template, list)",
+   "module": "project_creator/providers.py",
+   "function": "_launch_refusal",
+   "kind": "condition",
+   "text": "isinstance(template, list)",
+   "message": "provider capability is not in a launchable data-only shape",
+   "disposition": "covered",
+   "rows": [
+    "edges:argv that is not a list"
+   ],
+   "mutants": [
+    "launchable_template_type_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "_launch_refusal | provider capability is not in a launchable data-only shape | template[1:] == ['--model', '{model}']",
+   "module": "project_creator/providers.py",
+   "function": "_launch_refusal",
+   "kind": "condition",
+   "text": "template[1:] == ['--model', '{model}']",
+   "message": "provider capability is not in a launchable data-only shape",
+   "disposition": "covered",
+   "rows": [
+    "edges:argv of the wrong length",
+    "edges:argv template changed"
+   ],
+   "mutants": [
+    "launchable_template_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "_launch_refusal | provider capability is not in a launchable data-only shape | isinstance(template[0], str)",
+   "module": "project_creator/providers.py",
+   "function": "_launch_refusal",
+   "kind": "condition",
+   "text": "isinstance(template[0], str)",
+   "message": "provider capability is not in a launchable data-only shape",
+   "disposition": "covered",
+   "rows": [
+    "edges:argv whose first element is not a string"
+   ],
+   "mutants": [
+    "launchable_argv0_type_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "_launch_refusal | provider capability is not in a launchable data-only shape | Path(template[0]).suffix.lower() == '.exe'",
+   "module": "project_creator/providers.py",
+   "function": "_launch_refusal",
+   "kind": "condition",
+   "text": "Path(template[0]).suffix.lower() == '.exe'",
+   "message": "provider capability is not in a launchable data-only shape",
+   "disposition": "covered",
+   "rows": [
+    "edges:executable is not an exe"
+   ],
+   "mutants": [
+    "launchable_exe_suffix_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "_launch_refusal | provider capability is not in a launchable data-only shape | _attestation_mode(config) is not None",
+   "module": "project_creator/providers.py",
+   "function": "_launch_refusal",
+   "kind": "condition",
+   "text": "_attestation_mode(config) is not None",
+   "message": "provider capability is not in a launchable data-only shape",
+   "disposition": "covered",
+   "rows": [
+    "edges:no attestation block at all"
+   ],
+   "mutants": [
+    "launchable_mode_unchecked"
+   ],
+   "reason": "delegation; the block's own conditions are inventoried in _attestation_mode"
+  },
+  {
+   "id": "_attestation_mode | via _attestation_mode | isinstance(attestation, dict)",
+   "module": "project_creator/providers.py",
+   "function": "_attestation_mode",
+   "kind": "condition",
+   "text": "isinstance(attestation, dict)",
+   "message": "via _attestation_mode",
+   "disposition": "covered",
+   "rows": [
+    "edges:no attestation block at all"
+   ],
+   "mutants": [
+    "mode_block_type_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "_attestation_mode | via _attestation_mode | set(attestation) == {'mode'}",
+   "module": "project_creator/providers.py",
+   "function": "_attestation_mode",
+   "kind": "condition",
+   "text": "set(attestation) == {'mode'}",
+   "message": "via _attestation_mode",
+   "disposition": "covered",
+   "rows": [
+    "edges:attestation block with an extra key"
+   ],
+   "mutants": [
+    "mode_exact_keys_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "_attestation_mode | via _attestation_mode | isinstance(attestation['mode'], str)",
+   "module": "project_creator/providers.py",
+   "function": "_attestation_mode",
+   "kind": "condition",
+   "text": "isinstance(attestation['mode'], str)",
+   "message": "via _attestation_mode",
+   "disposition": "covered",
+   "rows": [
+    "edges:attestation whose mode is not a string"
+   ],
+   "mutants": [
+    "mode_value_type_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "_attestation_mode | via _attestation_mode | attestation['mode'] in _ADMITTED_EVIDENCE",
+   "module": "project_creator/providers.py",
+   "function": "_attestation_mode",
+   "kind": "condition",
+   "text": "attestation['mode'] in _ADMITTED_EVIDENCE",
+   "message": "via _attestation_mode",
+   "disposition": "covered",
+   "rows": [
+    "edges:attestation naming an unknown mode"
+   ],
+   "mutants": [
+    "mode_admitted_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "_model_attestation_measured | via _model_attestation_measured | measurement.get('recorded_tier_withdrawn') is False",
+   "module": "project_creator/providers.py",
+   "function": "_model_attestation_measured",
+   "kind": "condition",
+   "text": "measurement.get('recorded_tier_withdrawn') is False",
+   "message": "via _model_attestation_measured",
+   "disposition": "covered",
+   "rows": [
+    "edges:recorded tier withdrawn",
+    "edges:recorded tier withdrawal absent"
+   ],
+   "mutants": [
+    "withdrawal_unchecked",
+    "attestation_measured_always_true"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "_model_attestation_measured | via _model_attestation_measured | type(calls) is int",
+   "module": "project_creator/providers.py",
+   "function": "_model_attestation_measured",
+   "kind": "condition",
+   "text": "type(calls) is int",
+   "message": "via _model_attestation_measured",
+   "disposition": "covered",
+   "rows": [
+    "edges:evidenced positive calls not an integer"
+   ],
+   "mutants": [
+    "evidenced_calls_type_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "_model_attestation_measured | via _model_attestation_measured | calls > 0",
+   "module": "project_creator/providers.py",
+   "function": "_model_attestation_measured",
+   "kind": "condition",
+   "text": "calls > 0",
+   "message": "via _model_attestation_measured",
+   "disposition": "covered",
+   "rows": [
+    "edges:no evidenced positive call"
+   ],
+   "mutants": [
+    "evidenced_calls_count_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "validate_capability -> assert_non_augmentable_directory",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "callee",
+   "text": "assert_non_augmentable_directory",
+   "message": "",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "inside the Docker branch, which is itself a recorded debt; its own refusals are outside this list"
+  },
+  {
+   "id": "validate_capability -> digest",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "callee",
+   "text": "digest",
+   "message": "",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "hashing; refuses nothing"
+  },
+  {
+   "id": "validate_capability -> provider_environment",
+   "module": "project_creator/providers.py",
+   "function": "validate_capability",
+   "kind": "callee",
+   "text": "provider_environment",
+   "message": "",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "builds the environment the binding is computed over; refuses nothing"
+  },
+  {
+   "id": "_reviewed_locks | selects runtime_hashes | runtime_hashes is None",
+   "module": "project_creator/processes.py",
+   "function": "_reviewed_locks",
+   "kind": "expression",
+   "text": "runtime_hashes is None",
+   "message": "selects runtime_hashes",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "selection: an absent closure is an empty one"
+  },
+  {
+   "id": "_reviewed_locks | invalid reviewed runtime closure | not isinstance(runtime_hashes, dict)",
+   "module": "project_creator/processes.py",
+   "function": "_reviewed_locks",
+   "kind": "condition",
+   "text": "not isinstance(runtime_hashes, dict)",
+   "message": "invalid reviewed runtime closure",
+   "disposition": "covered",
+   "rows": [
+    "lock:closure is not a mapping"
+   ],
+   "mutants": [
+    "closure_shape_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "_reviewed_locks | invalid reviewed runtime closure | isinstance(name, str)",
+   "module": "project_creator/processes.py",
+   "function": "_reviewed_locks",
+   "kind": "condition",
+   "text": "isinstance(name, str)",
+   "message": "invalid reviewed runtime closure",
+   "disposition": "covered",
+   "rows": [
+    "lock:closure name is not a string"
+   ],
+   "mutants": [
+    "closure_name_type_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "_reviewed_locks | invalid reviewed runtime closure | _valid_sha256(value)",
+   "module": "project_creator/processes.py",
+   "function": "_reviewed_locks",
+   "kind": "condition",
+   "text": "_valid_sha256(value)",
+   "message": "invalid reviewed runtime closure",
+   "disposition": "covered",
+   "rows": [
+    "lock:closure hash is not a digest"
+   ],
+   "mutants": [
+    "closure_hash_shape_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "_reviewed_locks | guards reviewed[argv[0]] = executable_hash | executable_hash is not None",
+   "module": "project_creator/processes.py",
+   "function": "_reviewed_locks",
+   "kind": "expression",
+   "text": "executable_hash is not None",
+   "message": "guards reviewed[argv[0]] = executable_hash",
+   "disposition": "covered",
+   "rows": [
+    "lock:file changed before launch"
+   ],
+   "mutants": [
+    "executable_never_locked_at_launch"
+   ],
+   "reason": "decides whether argv[0] is hash-locked at the moment of launch, which is the property REQ-LC-023 names; round 25 dropped it silently (R25-SPEC-02)"
+  },
+  {
+   "id": "_reviewed_locks | conflicting reviewed file hashes | name in reviewed",
+   "module": "project_creator/processes.py",
+   "function": "_reviewed_locks",
+   "kind": "condition",
+   "text": "name in reviewed",
+   "message": "conflicting reviewed file hashes",
+   "disposition": "covered",
+   "rows": [
+    "lock:two hashes for one file"
+   ],
+   "mutants": [
+    "conflicting_hashes_allowed"
+   ],
+   "reason": "also the scope of the conflict test: it applies only to a name already reviewed"
+  },
+  {
+   "id": "_reviewed_locks | conflicting reviewed file hashes | reviewed[name] != value",
+   "module": "project_creator/processes.py",
+   "function": "_reviewed_locks",
+   "kind": "condition",
+   "text": "reviewed[name] != value",
+   "message": "conflicting reviewed file hashes",
+   "disposition": "covered",
+   "rows": [
+    "lock:two hashes for one file"
+   ],
+   "mutants": [
+    "conflicting_hashes_allowed"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "_reviewed_locks | atomic reviewed runtime binding is unsupported on this host | reviewed",
+   "module": "project_creator/processes.py",
+   "function": "_reviewed_locks",
+   "kind": "condition",
+   "text": "reviewed",
+   "message": "atomic reviewed runtime binding is unsupported on this host",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "scope: an empty closure locks nothing, so the host check does not apply"
+  },
+  {
+   "id": "_reviewed_locks | atomic reviewed runtime binding is unsupported on this host | os.name != 'nt'",
+   "module": "project_creator/processes.py",
+   "function": "_reviewed_locks",
+   "kind": "condition",
+   "text": "os.name != 'nt'",
+   "message": "atomic reviewed runtime binding is unsupported on this host",
+   "disposition": "debt",
+   "rows": [],
+   "mutants": [],
+   "reason": "cannot fire on Windows, which is the host this suite runs on; a non-Windows run is owed",
+   "provider_reachable": false
+  },
+  {
+   "id": "_reviewed_locks | reviewed runtime path is not immutable | not path.is_absolute()",
+   "module": "project_creator/processes.py",
+   "function": "_reviewed_locks",
+   "kind": "condition",
+   "text": "not path.is_absolute()",
+   "message": "reviewed runtime path is not immutable",
+   "disposition": "covered",
+   "rows": [
+    "lock:relative reviewed path"
+   ],
+   "mutants": [
+    "path_immutability_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "_reviewed_locks | reviewed runtime path is not immutable | not _valid_sha256(expected)",
+   "module": "project_creator/processes.py",
+   "function": "_reviewed_locks",
+   "kind": "condition",
+   "text": "not _valid_sha256(expected)",
+   "message": "reviewed runtime path is not immutable",
+   "disposition": "debt",
+   "rows": [],
+   "mutants": [],
+   "reason": "a malformed executable hash reaches this line only from a caller, and the gate validates that hash before the launch path is entered",
+   "provider_reachable": false
+  },
+  {
+   "id": "_reviewed_locks | reviewed runtime path is not immutable | not _reparse_free(path)",
+   "module": "project_creator/processes.py",
+   "function": "_reviewed_locks",
+   "kind": "condition",
+   "text": "not _reparse_free(path)",
+   "message": "reviewed runtime path is not immutable",
+   "disposition": "debt",
+   "rows": [],
+   "mutants": [],
+   "reason": "reachable for a provider: a junction in the reviewed path is a real state of the world and no fixture in this suite creates one",
+   "provider_reachable": true
+  },
+  {
+   "id": "_locked_windows_reviewed_path | guards stream.close() | stream",
+   "module": "project_creator/processes.py",
+   "function": "_locked_windows_reviewed_path",
+   "kind": "expression",
+   "text": "stream",
+   "message": "guards stream.close()",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "cleanup: close the handle only if it was opened"
+  },
+  {
+   "id": "_locked_windows_reviewed_path | could not lock reviewed path ancestry | handle == invalid",
+   "module": "project_creator/processes.py",
+   "function": "_locked_windows_reviewed_path",
+   "kind": "condition",
+   "text": "handle == invalid",
+   "message": "could not lock reviewed path ancestry",
+   "disposition": "debt",
+   "rows": [],
+   "mutants": [],
+   "reason": "reachable for a provider; no row can make CreateFileW fail on an ancestor without Win32 injection",
+   "provider_reachable": true
+  },
+  {
+   "id": "_locked_windows_reviewed_path | reviewed path ancestry contains a reparse point | attributes == 4294967295",
+   "module": "project_creator/processes.py",
+   "function": "_locked_windows_reviewed_path",
+   "kind": "condition",
+   "text": "attributes == 4294967295",
+   "message": "reviewed path ancestry contains a reparse point",
+   "disposition": "debt",
+   "rows": [],
+   "mutants": [],
+   "reason": "reachable for a provider; OS-level, owed",
+   "provider_reachable": true
+  },
+  {
+   "id": "_locked_windows_reviewed_path | reviewed path ancestry contains a reparse point | attributes & 1024",
+   "module": "project_creator/processes.py",
+   "function": "_locked_windows_reviewed_path",
+   "kind": "condition",
+   "text": "attributes & 1024",
+   "message": "reviewed path ancestry contains a reparse point",
+   "disposition": "debt",
+   "rows": [],
+   "mutants": [],
+   "reason": "reachable for a provider; a reparse-point fixture is owed",
+   "provider_reachable": true
+  },
+  {
+   "id": "_locked_windows_reviewed_path | reviewed path ancestry contains a reparse point | not _same_windows_path(_windows_final_path(handle), directory)",
+   "module": "project_creator/processes.py",
+   "function": "_locked_windows_reviewed_path",
+   "kind": "condition",
+   "text": "not _same_windows_path(_windows_final_path(handle), directory)",
+   "message": "reviewed path ancestry contains a reparse point",
+   "disposition": "debt",
+   "rows": [],
+   "mutants": [],
+   "reason": "reachable for a provider; OS-level, owed",
+   "provider_reachable": true
+  },
+  {
+   "id": "_locked_windows_reviewed_path | could not lock reviewed file | handle == invalid",
+   "module": "project_creator/processes.py",
+   "function": "_locked_windows_reviewed_path",
+   "kind": "condition",
+   "text": "handle == invalid",
+   "message": "could not lock reviewed file",
+   "disposition": "debt",
+   "rows": [],
+   "mutants": [],
+   "reason": "reachable for a provider; OS-level, owed",
+   "provider_reachable": true
+  },
+  {
+   "id": "_locked_windows_reviewed_path | reviewed file path identity changed | not _same_windows_path(_windows_final_path(handle), path)",
+   "module": "project_creator/processes.py",
+   "function": "_locked_windows_reviewed_path",
+   "kind": "condition",
+   "text": "not _same_windows_path(_windows_final_path(handle), path)",
+   "message": "reviewed file path identity changed",
+   "disposition": "debt",
+   "rows": [],
+   "mutants": [],
+   "reason": "reachable for a provider; OS-level, owed",
+   "provider_reachable": true
+  },
+  {
+   "id": "_locked_windows_reviewed_path | reviewed file changed before launch | observed != expected_sha256",
+   "module": "project_creator/processes.py",
+   "function": "_locked_windows_reviewed_path",
+   "kind": "condition",
+   "text": "observed != expected_sha256",
+   "message": "reviewed file changed before launch",
+   "disposition": "covered",
+   "rows": [
+    "lock:file changed before launch"
+   ],
+   "mutants": [
+    "launch_hash_unchecked"
+   ],
+   "reason": ""
+  },
+  {
+   "id": "_reviewed_locks -> _reparse_free",
+   "module": "project_creator/processes.py",
+   "function": "_reviewed_locks",
+   "kind": "callee",
+   "text": "_reparse_free",
+   "message": "",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "reparse predicate; its OS-level conditions are outside this list"
+  },
+  {
+   "id": "_reviewed_locks -> _valid_sha256",
+   "module": "project_creator/processes.py",
+   "function": "_reviewed_locks",
+   "kind": "callee",
+   "text": "_valid_sha256",
+   "message": "",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "digest-shape predicate, decided at the conditions that call it"
+  },
+  {
+   "id": "_locked_windows_reviewed_path -> _same_windows_path",
+   "module": "project_creator/processes.py",
+   "function": "_locked_windows_reviewed_path",
+   "kind": "callee",
+   "text": "_same_windows_path",
+   "message": "",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "Win32 path identity; outside this list"
+  },
+  {
+   "id": "_locked_windows_reviewed_path -> _windows_final_path",
+   "module": "project_creator/processes.py",
+   "function": "_locked_windows_reviewed_path",
+   "kind": "callee",
+   "text": "_windows_final_path",
+   "message": "",
+   "disposition": "structural",
+   "rows": [],
+   "mutants": [],
+   "reason": "Win32 final path; outside this list"
+  }
+ ]
 }
