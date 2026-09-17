@@ -34,13 +34,32 @@ def catalog():
     }}}
 
 
+def brief():
+    return {"summary": "Two slices: increment, then a report that uses it. Network access is out of scope.",
+            "users": [{"name": "developer", "description": "Calls calc.increment and report.report."}],
+            "success_conditions": ["report(1) returns the text 2"], "constraints": ["no network access"],
+            "decisions": [], "glossary": {"entries": []}}
+
+
 def spec():
-    return {"title": "Two sequential slices", "non_goals": ["network"], "requirements": [
-        {"id": "REQ-1", "text": "increment", "acceptance": [
-            {"id": "AC-1", "text": "increment adds one", "test_ids": ["unit-calc"]}]},
-        {"id": "REQ-2", "text": "report", "acceptance": [
-            {"id": "AC-2", "text": "report uses increment", "test_ids": ["unit-report"]}]},
-    ]}
+    # The decision cites repository evidence rather than the brief, so the same spec is valid when a
+    # standalone stage is given it without a brief.
+    return {"title": "Two sequential slices", "problem": "There is no increment and no report built on it.",
+            "solution": "calc.increment adds one, and report.report formats that result.",
+            "actors": [{"name": "developer", "description": "Uses both functions."}],
+            "non_goals": ["network"],
+            "decisions": [{"id": "SDEC-1", "kind": "module", "decision": "report.py imports increment from calc.py",
+                           "rationale": "The report must reuse the increment slice.",
+                           "source": {"type": "evidence", "ref": "calc.py"}}],
+            "test_seams": [{"seam": "calc.increment", "test_ids": ["unit-calc"], "prior_art": []},
+                           {"seam": "report.report", "test_ids": ["unit-report"], "prior_art": []}],
+            "testing_notes": [], "further_notes": [],
+            "requirements": [
+                {"id": "REQ-1", "actor": "developer", "text": "increment", "benefit": "later slices can build on it",
+                 "acceptance": [{"id": "AC-1", "text": "increment adds one", "test_ids": ["unit-calc"]}]},
+                {"id": "REQ-2", "actor": "developer", "text": "report", "benefit": "the result can be shown as text",
+                 "acceptance": [{"id": "AC-2", "text": "report uses increment", "test_ids": ["unit-report"]}]},
+            ]}
 
 
 class Scenario:
@@ -59,7 +78,7 @@ class Scenario:
                 scenario.calls.append({"stage": stage, "vendor": vendor, "model": model,
                                        "context": context, "packet": copy.deepcopy(packet)})
                 if stage == "grill-with-docs":
-                    return {"brief": {"summary": "two slices", "decisions": [], "glossary": {}}, "questions": []}
+                    return {"brief": brief(), "questions": []}
                 if stage == "to-spec":
                     return {"spec": spec(), "questions": []}
                 if stage == "to-tickets":
@@ -74,21 +93,22 @@ class Scenario:
                     if ticket == "T-1":
                         return {"changes": [{"path": "calc.py",
                             "expected_sha256": packet["source"]["file_sha256"]["calc.py"],
-                            "content": "def increment(x):\n    return x + 1\n"}], "questions": []}
+                            "content": "def increment(x):\n    return x + 1\n"}], "summary": "increment", "questions": []}
                     return {"changes": [{"path": "report.py",
                         "expected_sha256": packet["source"]["file_sha256"]["report.py"],
-                        "content": "from calc import increment\n\ndef report(x):\n    return str(increment(x))\n"}], "questions": []}
+                        "content": "from calc import increment\n\ndef report(x):\n    return str(increment(x))\n"}], "summary": "report", "questions": []}
                 checked = packet["criteria_in_scope"]
                 if stage == "spec-review" and packet["ticket"] and packet["ticket"]["id"] == "T-1":
                     scenario.first_ticket_spec_reviews += 1
                     if scenario.first_ticket_spec_reviews == 1:
                         return {"verdict": "fail", "checked_criteria": checked, "limitations": [],
                                 "findings": [{"id": "F-P2", "priority": 2, "path": "calc.py", "line": 2,
-                                              "message": "Synthetic blocking finding forces a repair pass."}]}
+                                              "message": "Synthetic blocking finding forces a repair pass.",
+                                              "criterion": None, "disposition": None}]}
                 findings = []
                 if stage == "defect-review":
                     findings = [{"id": "F-P3", "priority": 3, "path": "calc.py", "line": 1,
-                                 "message": "Synthetic non-blocking cleanup note.",
+                                 "message": "Synthetic non-blocking cleanup note.", "criterion": None,
                                  "disposition": "Accepted for this bounded pilot."}]
                 return {"verdict": "pass", "checked_criteria": checked,
                         "findings": findings, "limitations": []}

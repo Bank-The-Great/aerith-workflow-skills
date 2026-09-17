@@ -16,7 +16,8 @@ staged, unstaged and scope-relevant untracked work. Missing source or a missing
 spec means `needs_context`, never an implied pass.
 
 Check every acceptance criterion: missing/partial implementation, behavior that
-looks present but is wrong, and work not requested. Separately cite documented
+looks present but is wrong, and work not requested. Check that the work honors the
+spec's decisions and verifies behavior at its declared test seams. Separately cite documented
 standard violations. Mark design smells as advisory judgment, not hard rules;
 repository standards override heuristics. Skip issues already enforced by tools.
 The [engineering method](../../references/engineering-method.md) provides the

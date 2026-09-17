@@ -77,6 +77,19 @@
 - A control that reads only a subprocess's stdout cannot tell CLEAN from UNANSWERED.
   Measured: git exits 128 with empty stdout outside a repository, which is exactly what
   a clean tree returns, and the campaign would have mutated files in place on it.
+- A skill's instructions and its output schema are one contract. A field the skill asks
+  for and the strict schema has no room for is silently dropped or refuses the paid call,
+  and nothing reports which. Every example shown to a worker is tested against its schema.
+- Validate a worker's output at the controller, not only in the real transport. Test doubles
+  that skip the schema let a suite pass while the first live call is refused.
+- A worker's guess is not a decision. A spec decision names its source (brief, answer,
+  evidence) or declares itself an assumption, and an assumption is asked before anything
+  binds to it.
+- Check a saved document before the call that reads it is paid for, and put the stage
+  schema into the call's cache identity, so an old answer never serves a new contract.
+- Never write a repository file with Python's text-mode write on Windows: it converts every
+  line ending to CRLF, the working copy stops matching the LF the repository stores, and a
+  release manifest hashed from working-copy bytes disagrees with a fresh checkout. Write bytes.
 - Filter a walk by the LINE it must stop at, not by the top-level statements that
   end before it. A block that encloses the stopping point is dropped whole, and
   everything inside it goes with it.

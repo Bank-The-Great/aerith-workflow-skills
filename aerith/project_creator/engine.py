@@ -8,6 +8,8 @@ from pathlib import Path
 
 from .contracts import (GateError, STAGES, artifact, criteria, digest, parse_artifact,
                         safe_relative, safe_text, ticket_order, validate_review)
+from .output_schemas import (assumption_questions, schema_for, validate_brief, validate_output,
+                             validate_spec)
 from .models import accept_pin, catalog_pin, declare_pin, model_for
 from .admission import verify_package, admission_stopped
 from .providers import CLIProvider, VerificationRunner
@@ -29,12 +31,14 @@ The controller, not you, decides whether a stage or project is complete.
 """
 
 CONTRACTS = {
-    "grill-with-docs": {"brief": {"summary": "...", "decisions": [{"id": "DEC-001", "decision": "...", "rationale": "..."}], "glossary": {"entries": [{"term": "...", "definition": "..."}]}}, "questions": []},
-    "to-spec": {"spec": {"title": "...", "non_goals": [], "requirements": [{"id": "REQ-001", "text": "...", "acceptance": [{"id": "AC-001", "text": "...", "test_ids": ["approved-test-id"]}]}]}, "questions": []},
+    # Each example must itself pass the stage schema (tests/test_contracts.py). The "..." strings
+    # mark where content goes, and the document contracts REFUSE them if a worker copies them.
+    "grill-with-docs": {"brief": {"summary": "...", "users": [{"name": "...", "description": "..."}], "success_conditions": ["..."], "constraints": [], "decisions": [{"id": "DEC-001", "decision": "...", "rationale": "..."}], "glossary": {"entries": [{"term": "...", "definition": "..."}]}}, "questions": []},
+    "to-spec": {"spec": {"title": "...", "problem": "...", "solution": "...", "actors": [{"name": "a user named in the brief, or system", "description": "..."}], "non_goals": [], "decisions": [{"id": "SDEC-001", "kind": "interface", "decision": "...", "rationale": "...", "source": {"type": "brief", "ref": "DEC-001"}}], "test_seams": [{"seam": "...", "test_ids": ["approved-test-id"], "prior_art": []}], "testing_notes": [], "further_notes": [], "requirements": [{"id": "REQ-001", "actor": "...", "text": "...", "benefit": "...", "acceptance": [{"id": "AC-001", "text": "...", "test_ids": ["approved-test-id"]}]}]}, "questions": []},
     "to-tickets": {"tickets": [{"id": "T-001", "title": "...", "criteria": ["AC-001"], "blocked_by": [], "write_set": ["approved/path.py"]}], "questions": []},
     "implement": {"changes": [{"path": "approved/existing.py", "expected_sha256": "current UTF-8 file hash", "content": "complete replacement UTF-8 file"}], "summary": "...", "questions": []},
-    "spec-review": {"verdict": "pass|fail|needs_context", "checked_criteria": ["AC-001"], "findings": [], "limitations": []},
-    "defect-review": {"verdict": "pass|fail|needs_context", "checked_criteria": [], "findings": [], "limitations": []},
+    "spec-review": {"verdict": "pass", "checked_criteria": ["AC-001"], "findings": [], "limitations": []},
+    "defect-review": {"verdict": "pass", "checked_criteria": [], "findings": [], "limitations": []},
 }
 
 RESOURCE_FILES = {
@@ -149,7 +153,21 @@ def start(store: Store, project: Path, objective: str, config: dict, catalog: di
            "failure_counts": {}, "repair_attempts": {}, "created_at": now(), "revision": 0, "mirror_status": "not_configured"}
     # A standalone later stage consumes explicit preexisting artifacts, never
     # secretly invokes its predecessors or treats a missing spec as a pass.
-    for name, value in config.get("input_artifacts", {}).items():
+    supplied = config.get("input_artifacts", {})
+    produces = {"grill-with-docs": "brief", "to-spec": "spec", "to-tickets": "tickets"}
+    if standalone in produces and produces[standalone] in supplied:
+        # Otherwise the stage pays for a call and is then refused for replacing its own input.
+        raise GateError("a standalone stage cannot also be given the artifact it produces")
+    # Supplied documents meet the same contract a worker's would, here, before any call is paid
+    # for, so an older-shape brief or spec is refused with the field it lacks (REQ-PC-013).
+    if isinstance(supplied.get("brief"), dict):
+        validate_brief(supplied["brief"])
+    if isinstance(supplied.get("spec"), dict):
+        validate_spec(supplied["spec"], test_ids=set(config["tests"]),
+                      brief=supplied.get("brief") if isinstance(supplied.get("brief"), dict) else None,
+                      answers=[])
+        criteria(supplied["spec"], set(config["tests"]))
+    for name, value in supplied.items():
         if name not in {"brief", "spec", "tickets"} or not isinstance(value, dict):
             raise GateError("invalid standalone input artifact")
         path = store.root / rid / (name + ".md")
@@ -206,6 +224,14 @@ class Engine:
         if not expected or not path.is_file() or digest(path.read_bytes()) != expected:
             raise GateError("canonical artifact absent or changed; reconciliation required")
         return parse_artifact(path.read_text(encoding="utf-8"))
+
+    def _brief(self, run):
+        return self.document(run, "brief") if "brief" in run["artifacts"] else None
+
+    def _validated_spec(self, run):
+        spec = self.document(run, "spec")
+        validate_spec(spec, test_ids=set(run["config"]["tests"]), brief=self._brief(run), answers=run["answers"])
+        return spec
 
     def save_document(self, run, name, value):
         path = self.store.root / run["id"] / (name + ".md")
@@ -284,7 +310,7 @@ class Engine:
                     raise GateError("review vendor was not pinned at run creation")
                 run["spec_vendor"] = spec_vendor  # This invocation only.
             run["_manual_revision"] = run["revision"]
-            acs = criteria(self.document(run, "spec"), set(run["config"]["tests"]))
+            acs = criteria(self._validated_spec(run), set(run["config"]["tests"]))
             code = snapshot(root, list(set(run["config"]["read_set"] + run["config"]["write_set"])),
                             git_dir, run["branch"])
             reports = {}
@@ -328,7 +354,9 @@ class Engine:
             raise GateError("workflow or skill disabled")
         admitted = self.admission_check(run, stage)
         vendor, model = model_for(run["pins"], run["vendor"], stage, run["spec_vendor"])
-        identity = digest([packet, vendor, model])
+        # The stage schema is part of what was asked, so a cached answer to an older schema is a
+        # different call, never a hit that returns the old shape (INVERTER F8, 2026-09-17).
+        identity = digest([packet, vendor, model, schema_for(stage)])
         directory = self.store.root / run["id"] / "calls" / identity
         result_path = directory / "response.json"
         if result_path.exists():
@@ -339,13 +367,17 @@ class Engine:
             if len(matching) != 1 or matching[0].get("file_hash") != digest(cached_raw):
                 raise GateError("cached response changed or lacks a durable receipt; reconciliation required")
             self.store.audit(run["id"], "skill_cached", {"stage": stage, "packet_hash": identity, "admission": admitted})
-            return json.loads(cached_raw)
+            return validate_output(stage, json.loads(cached_raw))
         self.store.audit(run["id"], "skill_invocation", {"stage": stage, "packet_hash": identity, "admission": admitted})
         directory.mkdir(parents=True, exist_ok=True)
         atomic_text(directory / "packet.json", json.dumps(packet, ensure_ascii=False, indent=2))
         response = self.provider_factory(run, vendor).invoke(stage, model, packet, directory)
         if not isinstance(response, dict):
             raise GateError("provider response must be an object")
+        # Validated at the controller as well as in the CLI transport: before this, only the real
+        # transport validated, so every test double skipped the schema and a suite could pass while
+        # the first live call was refused (INVERTER F2, 2026-09-17).
+        validate_output(stage, response)
         safe_text(json.dumps(response, ensure_ascii=False))
         response_text = json.dumps(response, ensure_ascii=False, indent=2)
         atomic_text(result_path, response_text)
@@ -397,21 +429,28 @@ class Engine:
         run["status"] = "running"
         self.checkpoint(run, "stage_start")
         if stage in STAGES[:3]:
+            if stage == "to-tickets":
+                # The saved spec is checked BEFORE the call that reads it is paid for.
+                self._validated_spec(run)
             result = self.invoke(run, stage, self.packet(run, stage, code=code))
             if self.question(run, result):
                 return run
             if stage == "grill-with-docs":
-                brief = result.get("brief")
-                if not isinstance(brief, dict) or not brief.get("summary") or not isinstance(brief.get("decisions"), list) or not isinstance(brief.get("glossary"), dict):
-                    raise GateError("brief, decisions and glossary required")
-                self.save_document(run, "brief", brief)
+                self.save_document(run, "brief", validate_brief(result["brief"]))
             elif stage == "to-spec":
-                spec = result.get("spec", {})
+                spec = result["spec"]
+                validate_spec(spec, test_ids=set(run["config"]["tests"]), brief=self._brief(run),
+                              answers=run["answers"])
                 criteria(spec, set(run["config"]["tests"]))
+                # The killer this guards (INVERTER F1, 2026-09-17): a worker's guess, labelled a
+                # decision, becoming the authority for tickets, implementation and review with no
+                # human ever seeing it. An assumption is not saved; it is asked.
+                if self.question(run, {"questions": assumption_questions(spec)}):
+                    return run
                 self.save_document(run, "spec", spec)
                 self._mirror_queue(run)
             else:
-                acs = criteria(self.document(run, "spec"), set(run["config"]["tests"]))
+                acs = criteria(self._validated_spec(run), set(run["config"]["tests"]))
                 ticket_order(result.get("tickets"), acs, allowed)
                 self.save_document(run, "tickets", {"tickets": result["tickets"]})
                 self.save_ticket_documents(run, result["tickets"])
@@ -424,7 +463,7 @@ class Engine:
             self.checkpoint(run, "stage_completed")
             return run
 
-        acs = criteria(self.document(run, "spec"), set(run["config"]["tests"]))
+        acs = criteria(self._validated_spec(run), set(run["config"]["tests"]))
         if run["standalone"] in {"spec-review", "defect-review"}:
             report = self.invoke(run, stage, self.packet(run, stage, code=code, scope=sorted(acs)))
             passed = validate_review(report, set(acs), spec_axis=stage == "spec-review")

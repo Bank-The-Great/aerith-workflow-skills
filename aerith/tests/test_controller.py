@@ -16,7 +16,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import gate_inventory
-from project_creator.contracts import (GateError, criteria, digest, safe_relative, ticket_order, validate_review)
+from project_creator.contracts import (GateError, artifact, criteria, digest, safe_relative, ticket_order,
+                                       validate_review)
 from project_creator.engine import Engine, RESOURCE_FILES, configure_runtime_resources, start
 from project_creator.models import accept_pin, catalog_pin, declare_pin, model_for, refresh_catalog
 from project_creator.store import Store, atomic_text, exclusive
@@ -36,9 +37,27 @@ configure_runtime_resources({name: (PACKAGE / name).read_bytes()
                              for name in RESOURCE_FILES.values()})
 
 
+def brief():
+    return {"summary": "Callers need an integer incremented; network access is out of scope.",
+            "users": [{"name": "developer", "description": "Calls calc.increment from their own code."}],
+            "success_conditions": ["increment(3) returns 4"], "constraints": ["no network access"],
+            "decisions": [{"id": "DEC-1", "decision": "Keep increment in calc.py",
+                           "rationale": "calc.py is the only file in the approved scope."}],
+            "glossary": {"entries": [{"term": "increment", "definition": "Return the integer plus one."}]}}
+
+
 def spec():
-    return {"title": "Increment", "non_goals": ["network"], "requirements": [{"id": "REQ-1", "text": "increment an integer",
-            "acceptance": [{"id": "AC-1", "text": "increment(3) is 4", "test_ids": ["unit"]}]}]}
+    return {"title": "Increment", "problem": "Callers have no function that adds one to an integer.",
+            "solution": "calc.increment returns its argument plus one.",
+            "actors": [{"name": "developer", "description": "Calls calc.increment."}],
+            "non_goals": ["network"],
+            "decisions": [{"id": "SDEC-1", "kind": "module", "decision": "Implement increment in calc.py",
+                           "rationale": "The brief fixes the module.", "source": {"type": "brief", "ref": "DEC-1"}}],
+            "test_seams": [{"seam": "calc.increment", "test_ids": ["unit"], "prior_art": []}],
+            "testing_notes": [], "further_notes": [],
+            "requirements": [{"id": "REQ-1", "actor": "developer", "text": "increment an integer",
+                              "benefit": "callers stop writing the addition by hand",
+                              "acceptance": [{"id": "AC-1", "text": "increment(3) is 4", "test_ids": ["unit"]}]}]}
 
 
 def catalog():
@@ -56,14 +75,14 @@ class FixtureProvider:
     def invoke(self, stage, model, packet, directory):
         self.log.append((stage, model, copy.deepcopy(packet)))
         if stage == "grill-with-docs":
-            return {"brief": {"summary": "Increment an integer", "decisions": [], "glossary": {}}, "questions": []}
+            return {"brief": brief(), "questions": []}
         if stage == "to-spec":
             return {"spec": spec(), "questions": []}
         if stage == "to-tickets":
-            return {"tickets": [{"id": "T-1", "title": "Increment", "criteria": ["AC-1"], "blocked_by": [], "write_set": ["calc.py"]}]}
+            return {"tickets": [{"id": "T-1", "title": "Increment", "criteria": ["AC-1"], "blocked_by": [], "write_set": ["calc.py"]}], "questions": []}
         if stage == "implement":
             old = packet["source"]["files"]["calc.py"]
-            return {"changes": [{"path": "calc.py", "expected_sha256": digest(old), "content": "def increment(x):\n    return x + 1\n"}]}
+            return {"changes": [{"path": "calc.py", "expected_sha256": digest(old), "content": "def increment(x):\n    return x + 1\n"}], "summary": "increment", "questions": []}
         return {"verdict": "pass", "checked_criteria": packet["criteria_in_scope"], "findings": [], "limitations": []}
 
 
@@ -353,6 +372,93 @@ class Harness(unittest.TestCase):
         self.assertEqual([x[0] for x in self.log], ["grill-with-docs"])
         self.assertNotIn("delivery_commit", result)
 
+    # REQ-PC-013 (2026-09-17): the spec contract, enforced by the controller rather than by trust.
+
+    def test_an_assumption_in_the_spec_is_asked_before_the_spec_is_kept(self):
+        base = FixtureProvider(self.log)
+
+        class Assuming:
+            def invoke(inner, stage, model, packet, directory):
+                if stage != "to-spec":
+                    return base.invoke(stage, model, packet, directory)
+                self.log.append((stage, model, packet))
+                value = spec()
+                source = ({"type": "answer", "ref": "1"} if packet["answers"]
+                          else {"type": "assumption", "ref": ""})
+                value["decisions"].append({"id": "SDEC-9", "kind": "schema", "decision": "Return an int.",
+                                           "rationale": "Matches the tests.", "source": source})
+                return {"spec": value, "questions": []}
+
+        self.engine.provider_factory = lambda run, vendor: Assuming()
+        run = self.create(standalone=None)
+        result = self.engine.run(run["id"], max_steps=2)
+        self.assertEqual(result["status"], "waiting_for_answer")
+        self.assertNotIn("spec", result["artifacts"])
+        self.assertEqual(len(result["questions"]), 1)
+        self.assertIn("SDEC-9", result["questions"][0])
+        # The operator answers; the worker now cites the answer, and only then is the spec kept.
+        result["answers"].append({"questions": result["questions"], "answer": "Yes, an int."})
+        result["questions"], result["status"] = [], "ready"
+        self.store.save(result, "answer", expected_revision=result["revision"])
+        result = self.engine.run(run["id"], max_steps=1)
+        self.assertIn("spec", result["artifacts"])
+        self.assertEqual(result["stage"], "to-tickets")
+
+    def test_a_standalone_stage_cannot_be_given_the_artifact_it_produces(self):
+        self.config["input_artifacts"] = {"spec": spec()}
+        with self.assertRaisesRegex(GateError, "cannot also be given the artifact it produces"):
+            self.create(standalone="to-spec")
+        self.assertEqual(self.log, [])
+
+    def test_an_older_shape_supplied_spec_is_refused_before_any_call(self):
+        self.config["input_artifacts"] = {"spec": {"title": "Increment", "non_goals": [], "requirements": [
+            {"id": "REQ-1", "text": "increment", "acceptance": [{"id": "AC-1", "text": "adds one", "test_ids": ["unit"]}]}]}}
+        with self.assertRaisesRegex(GateError, "at spec: missing actors"):
+            self.create(standalone="to-tickets")
+        self.assertEqual(self.log, [])
+
+    def test_a_saved_spec_that_breaks_the_contract_stops_the_run_before_the_next_paid_call(self):
+        run = self.create()
+        result = self.engine.run(run["id"], max_steps=2)
+        self.assertEqual(result["stage"], "to-tickets")
+        older = {"title": "Increment", "non_goals": [], "requirements": spec()["requirements"]}
+        path = self.store.root / run["id"] / "spec.md"
+        path.write_text(artifact("spec", older), encoding="utf-8")
+        result["artifacts"]["spec"] = digest(path.read_bytes())
+        self.store.save(result, "reconciled", expected_revision=result["revision"])
+        calls_before = len(self.log)
+        result = self.engine.run(run["id"], max_steps=1)
+        self.assertEqual(result["status"], "paused")
+        self.assertIn("at spec: missing", result["last_error"])
+        self.assertEqual(len(self.log), calls_before, "the to-tickets call must not be paid for")
+
+    def test_the_stage_schema_is_part_of_what_a_cached_call_answered(self):
+        run = self.create()
+        packet = self.engine.packet(run, "grill-with-docs")
+        self.engine.invoke(run, "grill-with-docs", packet)
+        self.engine.invoke(run, "grill-with-docs", packet)
+        self.assertEqual(len(self.log), 1)
+        with patch("project_creator.engine.schema_for", lambda stage: {"a different schema": stage}):
+            self.engine.invoke(run, "grill-with-docs", packet)
+        self.assertEqual(len(self.log), 2, "a changed schema must not return the answer to the old one")
+
+    def test_a_worker_output_that_misses_a_field_is_refused_by_the_controller_with_its_path(self):
+        base = FixtureProvider(self.log)
+
+        class Older:
+            def invoke(inner, stage, model, packet, directory):
+                if stage == "grill-with-docs":
+                    return {"brief": {"summary": "s", "decisions": [], "glossary": {"entries": []}}, "questions": []}
+                return base.invoke(stage, model, packet, directory)
+
+        self.engine.provider_factory = lambda run, vendor: Older()
+        run = self.create()
+        result = self.engine.run(run["id"], max_steps=1)
+        self.assertEqual(result["status"], "paused")
+        self.assertIn("at grill-with-docs.brief: missing constraints, success_conditions, users", result["last_error"])
+        self.assertEqual(list((self.store.root / run["id"] / "calls").glob("*/response.json")), [],
+                         "a refused output is never cached as an answer")
+
     def test_unavailable_provider_pauses_without_fallback(self):
         run = self.create()
         result = Engine(self.store, admission_check=lambda run, stage: {}).run(run["id"], max_steps=10)
@@ -490,7 +596,7 @@ class Harness(unittest.TestCase):
                     return base.invoke(stage, model, packet, directory)
                 inner.count += 1
                 return {"changes": [{"path": "calc.py", "expected_sha256": packet["source"]["file_sha256"]["calc.py"],
-                                     "content": f"def increment(x):\n    return x + {inner.count + 20}\n"}]}
+                                     "content": f"def increment(x):\n    return x + {inner.count + 20}\n"}], "summary": "wrong", "questions": []}
         writer = FailingWriter()
         self.engine.provider_factory = lambda run, vendor: writer
         result = self.engine.run(run["id"], max_steps=20)
@@ -503,7 +609,7 @@ class Harness(unittest.TestCase):
         self.engine.run(run["id"], max_steps=3)
         class Clarifier:
             def invoke(inner, *args):
-                return {"questions": ["Which behavior is intended?"]}
+                return {"changes": [], "summary": "blocked on a question", "questions": ["Which behavior is intended?"]}
         self.engine.provider_factory = lambda run, vendor: Clarifier()
         for _ in range(4):
             current = self.engine.run(run["id"], max_steps=1)

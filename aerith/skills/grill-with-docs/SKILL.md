@@ -14,10 +14,16 @@ only decisions whose prerequisites are settled. Give a practical recommendation
 and explain its tradeoff. Keep unresolved decisions explicit; do not invent the
 operator's preferences. Do not repeatedly ask questions already answered.
 
-Record the problem, intended users, success conditions, scope, non-goals,
-constraints, glossary and material decisions with rationale. Separate documented
-facts from assumptions. Challenge terminology against the existing glossary.
-Preserve decision history rather than replacing it with a new interpretation.
+The brief has these fields and no others: `summary` (the problem, the intended
+outcome, the scope and the non-goals, in plain prose); `users` (each intended user
+or operator role by `name` with a `description`; the spec may only use these names,
+or `system` for controller invariants); `success_conditions` (at least one
+observable condition); `constraints`; `decisions` (a stable `id`, the `decision`
+and its `rationale`, only for choices the operator settled or the evidence fixes);
+and `glossary` `entries`. Never write a placeholder such as "...": the controller
+refuses it. A guess is not a decision: ask it as a question instead. Challenge
+terminology against the existing glossary, and preserve decision history rather
+than replacing it with a new interpretation.
 
 Read the bundled [engineering method](../../references/engineering-method.md)
 for interviewing and domain-modeling details. No other installed skill is needed.
