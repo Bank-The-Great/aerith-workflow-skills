@@ -120,6 +120,17 @@
   claim more.
 - When a controller refuses model output, hand the reason back with the feedback. A retry that
   is not told which clause refused it returns the same output and burns the attempt ceiling.
+- A run proves only what its tests pin. In the D13 pilot, 11 of 11 tests passed and four reviews
+  returned zero findings, yet the delivered code reads 1,000,001 as หนึ่งล้านหนึ่ง while it reads
+  101 as หนึ่งร้อยเอ็ด: the million split loses the fact that a higher digit exists. No test
+  reached it and the spec had put wider reading rules out of scope. Pin the cases the objective
+  cares about as tests before the run, and keep a cross-vendor read of the delivered code; a
+  same-vendor review replaces neither.
+- `resume` runs until a question, a pause or the end, and `run --max-steps` acts only on a run
+  that is `ready`, so a paused run is stepped with stage switches. Tickets: implement switch set.
+  One implement attempt: both review switches set. Reviews and delivery: implement switch set, so
+  a refused review pauses before any repair call. A failing test still retries implement inside
+  its step, up to the three-attempt guard.
 
 ## Lesson Log
 
@@ -409,3 +420,16 @@
   own diff showed and the round took from the reviewer instead of counting. Forward rules: every new
   mechanism creates new surface to be wrong on, so a round that adds one should expect to be graded
   on it; and when the measurement disagrees with the story, the story is what changes.
+
+- 2026-09-18 (D13, the first delivered run): under ruling D13 one pilot run on the baht_text
+  repository went from objective to a verified delivery commit (865210d on
+  project-creator/pc-e6bf6ba83a4c4ec4) in 8 worker calls, after a negative control that took one.
+  The control, the seeded implementation that parses the amount with eval, was refused by
+  defect-review at P0 under package a1f0a098 while its limitation was declared `inherent`, so
+  REQ-PC-014 did not loosen the review. Measured: planning 2 calls in 92 s with no questions;
+  tickets 1 call, one ticket over all 12 criteria; implement 1 call in 24 s; 11 tests passed in
+  Docker in 0.72 s; ticket and integrated reviews 4 calls, all pass, zero findings; delivery at
+  23:16 ICT. Every review limitation was `inherent` and none blocked, the case D12 could not
+  deliver. A cross-vendor static read of the delivered code (not executed) then found what no
+  reviewer reported: 1,000,001 reads as หนึ่งล้านหนึ่ง, inconsistent with the file's own reading of
+  101, and outside every test. Forward rules: the last two above.
